@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: site-analyser-config
+  namespace: site-analyser
+data:
+  config.json: |
+    {
+      "urls": [
+        "https://example.com",
+        "https://suspicious-site.com"
+      ],
+      "ai_config": {
+        "provider": "openai",
+        "model": "gpt-4o",
+        "max_tokens": 1000,
+        "temperature": 0.1
+      },
+      "processing_config": {
+        "concurrent_requests": 3,
+        "request_timeout_seconds": 30,
+        "screenshot_timeout_seconds": 15,
+        "max_retries": 3,
+        "retry_delay_seconds": 2
+      },
+      "output_config": {
+        "results_directory": "/results",
+        "screenshots_directory": "/results/screenshots",
+        "json_output_file": "/results/analysis_results.json",
+        "keep_html": false,
+        "keep_screenshots": true
+      },
+      "trademark_prompts": {
+        "uk_government_branding": "Analyze this website screenshot and identify any potential UK Government branding violations. Look for: 1. Use of the Crown logo or similar royal symbols 2. GOV.UK branding or similar government styling 3. HMRC logos, branding, or official styling 4. Any text claiming government authority or official status 5. Color schemes that mimic official UK government websites (particularly the distinctive blue and white). Return a JSON response with violations found, confidence scores (0-1), and descriptions.",
+        "hmrc_branding": "Examine this screenshot for potential HMRC (Her Majesty's Revenue and Customs) trademark infringement: 1. HMRC logos or similar designs 2. Official HMRC color schemes and styling 3. Text claiming to be HMRC or official tax authority 4. Forms or pages that look like official HMRC documents 5. Any misleading tax-related official appearance. Provide JSON response with specific violations, confidence levels, and detailed descriptions."
+      },
+      "policy_prompts": {
+        "privacy_policy_detection": "Look at this website screenshot and identify links to privacy policies or privacy statements. Look for text like: Privacy Policy, Privacy Statement, Data Protection, Privacy Notice, etc. If you find any, provide the visible text and approximate location coordinates if possible. Return JSON with found links and their properties.",
+        "terms_conditions_detection": "Identify links to terms and conditions, terms of service, or terms of use in this screenshot. Look for: Terms and Conditions, Terms of Service, Terms of Use, Legal Terms, etc. Return JSON with found links and their locations."
+      }
+    }

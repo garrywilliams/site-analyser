@@ -1,0 +1,88 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: site-analyser-job
+  namespace: site-analyser
+  labels:
+    app: site-analyser
+    version: v1
+spec:
+  # Job will be automatically cleaned up after 24 hours
+  ttlSecondsAfterFinished: 86400
+  backoffLimit: 3
+  activeDeadlineSeconds: 3600  # 1 hour timeout
+  template:
+    metadata:
+      labels:
+        app: site-analyser
+        version: v1
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+      - name: site-analyser
+        image: site-analyser:latest
+        imagePullPolicy: IfNotPresent
+        
+        # Resource limits to prevent resource exhaustion
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        
+        # Environment variables
+        env:
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: site-analyser-secrets
+              key: openai-api-key
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: site-analyser-secrets
+              key: anthropic-api-key
+        
+        # Command and arguments
+        command: ["python", "-m", "site_analyser.main"]
+        args: 
+        - "--config"
+        - "/config/config.json"
+        - "--debug"
+        
+        # Volume mounts
+        volumeMounts:
+        - name: config-volume
+          mountPath: /config
+          readOnly: true
+        - name: results-volume
+          mountPath: /results
+        
+        # Security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false  # Playwright needs write access
+          runAsNonRoot: true
+      
+      # Volumes
+      volumes:
+      - name: config-volume
+        configMap:
+          name: site-analyser-config
+      - name: results-volume
+        emptyDir:
+          sizeLimit: 1Gi
+      
+      # Node selector to run on appropriate nodes
+      nodeSelector:
+        kubernetes.io/os: linux

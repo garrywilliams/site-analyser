@@ -1,0 +1,113 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: site-analyser-cronjob
+  namespace: site-analyser
+  labels:
+    app: site-analyser
+    version: v1
+spec:
+  # Run daily at 2 AM UTC
+  schedule: "0 2 * * *"
+  timezone: "UTC"
+  
+  # Job history limits
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  
+  # Concurrency policy - don't run multiple jobs simultaneously
+  concurrencyPolicy: Forbid
+  
+  # Don't start if previous job missed its scheduled time
+  startingDeadlineSeconds: 300
+  
+  jobTemplate:
+    metadata:
+      labels:
+        app: site-analyser
+        version: v1
+    spec:
+      # Clean up completed jobs after 2 hours
+      ttlSecondsAfterFinished: 7200
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600  # 1 hour timeout
+      
+      template:
+        metadata:
+          labels:
+            app: site-analyser
+            version: v1
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+          
+          containers:
+          - name: site-analyser
+            image: site-analyser:latest
+            imagePullPolicy: IfNotPresent
+            
+            # Resource limits
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "250m"
+              limits:
+                memory: "2Gi"
+                cpu: "1000m"
+            
+            # Environment variables
+            env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: site-analyser-secrets
+                  key: openai-api-key
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: site-analyser-secrets
+                  key: anthropic-api-key
+            - name: JOB_TYPE
+              value: "cronjob"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            
+            # Command and arguments
+            command: ["python", "-m", "site_analyser.main"]
+            args: 
+            - "--config"
+            - "/config/config.json"
+            
+            # Volume mounts
+            volumeMounts:
+            - name: config-volume
+              mountPath: /config
+              readOnly: true
+            - name: results-volume
+              mountPath: /results
+            
+            # Security context
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                - ALL
+              readOnlyRootFilesystem: false
+              runAsNonRoot: true
+          
+          # Volumes
+          volumes:
+          - name: config-volume
+            configMap:
+              name: site-analyser-config
+          - name: results-volume
+            emptyDir:
+              sizeLimit: 1Gi
+          
+          # Node selector
+          nodeSelector:
+            kubernetes.io/os: linux
