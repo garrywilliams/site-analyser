@@ -13,14 +13,9 @@ from dotenv import load_dotenv
 
 from .models.analysis import SiteAnalysisResult, BatchJobResult, AnalysisStatus
 from .models.config import SiteAnalyserConfig
-from .processors.ssl_checker import SSLProcessor
-from .processors.web_scraper import WebScraperProcessor
-from .processors.policy_analyzer import PolicyAnalyzerProcessor  
-from .processors.trademark_analyzer import TrademarkAnalyzerProcessor
-from .processors.bot_protection_detector import BotProtectionDetectorProcessor
+from .agents.coordinator import SiteAnalysisCoordinator
 from .utils.logging import setup_logging
 from .utils.url_scraper import HMRCSoftwareListScraper
-from .utils.rate_limiter import AIRateLimiter
 
 load_dotenv()
 
@@ -28,147 +23,15 @@ logger = structlog.get_logger()
 
 
 class SiteAnalyser:
-    """Main site analysis orchestrator."""
+    """Main site analysis orchestrator using Agno multi-agent framework."""
     
     def __init__(self, config: SiteAnalyserConfig):
         self.config = config
-        self.job_id = str(uuid.uuid4())
-        
-        # Create shared rate limiter for AI requests
-        self.ai_rate_limiter = AIRateLimiter(config.processing_config.ai_request_delay_seconds)
-        
-        # Initialize processors with shared rate limiter
-        self.processors = [
-            SSLProcessor(config),
-            BotProtectionDetectorProcessor(config),  # Run early to detect access issues
-            PolicyAnalyzerProcessor(config, self.ai_rate_limiter),
-            TrademarkAnalyzerProcessor(config, self.ai_rate_limiter),
-        ]
+        self.coordinator = SiteAnalysisCoordinator(config)
     
     async def analyze_sites(self) -> BatchJobResult:
-        """Analyze all configured sites."""
-        batch_result = BatchJobResult(
-            job_id=self.job_id,
-            started_at=datetime.now(timezone.utc),
-            total_urls=len(self.config.urls),
-            successful_analyses=0,
-            failed_analyses=0
-        )
-        
-        logger.info(
-            "batch_job_started",
-            job_id=self.job_id,
-            total_urls=batch_result.total_urls,
-            concurrent_requests=self.config.processing_config.concurrent_requests
-        )
-        
-        # Ensure output directories exist
-        self.config.output_config.results_directory.mkdir(parents=True, exist_ok=True)
-        self.config.output_config.screenshots_directory.mkdir(parents=True, exist_ok=True)
-        
-        # Process URLs with concurrency control
-        semaphore = asyncio.Semaphore(self.config.processing_config.concurrent_requests)
-        
-        async def analyze_single_site(url):
-            async with semaphore:
-                return await self._analyze_site(str(url))
-        
-        # Process all URLs concurrently
-        tasks = [analyze_single_site(url) for url in self.config.urls]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Process results
-        for result in results:
-            if isinstance(result, Exception):
-                logger.error("site_analysis_exception", error=str(result))
-                batch_result.failed_analyses += 1
-            else:
-                batch_result.results.append(result)
-                if result.status == AnalysisStatus.SUCCESS:
-                    batch_result.successful_analyses += 1
-                else:
-                    batch_result.failed_analyses += 1
-        
-        batch_result.completed_at = datetime.now(timezone.utc)
-        
-        # Save results
-        await self._save_results(batch_result)
-        
-        logger.info(
-            "batch_job_completed",
-            job_id=self.job_id,
-            total_urls=batch_result.total_urls,
-            successful=batch_result.successful_analyses,
-            failed=batch_result.failed_analyses,
-            duration_seconds=(batch_result.completed_at - batch_result.started_at).total_seconds()
-        )
-        
-        return batch_result
-    
-    async def _analyze_site(self, url: str) -> SiteAnalysisResult:
-        """Analyze a single site through all processors."""
-        start_time = datetime.now(timezone.utc)
-        
-        result = SiteAnalysisResult(
-            url=url,
-            timestamp=start_time,
-            status=AnalysisStatus.SUCCESS,
-            site_loads=False,
-            processing_duration_ms=0
-        )
-        
-        logger.info("site_analysis_started", url=url)
-        
-        # Use WebScraperProcessor with async context manager
-        async with WebScraperProcessor(self.config) as web_scraper:
-            result = await web_scraper.process_with_retry(url, result)
-        
-        # Process through other processors
-        for processor in self.processors:
-            result = await processor.process_with_retry(url, result)
-        
-        # Clean up resources if configured
-        if not self.config.output_config.keep_html:
-            result.html_content = None
-        
-        if not self.config.output_config.keep_screenshots and result.screenshot_path:
-            try:
-                result.screenshot_path.unlink()
-                result.screenshot_path = None
-            except Exception as e:
-                logger.warning("screenshot_cleanup_failed", url=url, error=str(e))
-        
-        logger.info(
-            "site_analysis_completed",
-            url=url,
-            status=result.status.value,
-            site_loads=result.site_loads,
-            has_ssl_analysis=bool(result.ssl_analysis),
-            has_privacy_policy=bool(result.privacy_policy),
-            has_terms_conditions=bool(result.terms_conditions),
-            trademark_violations=len(result.trademark_violations),
-            processing_duration_ms=result.processing_duration_ms
-        )
-        
-        return result
-    
-    async def _save_results(self, batch_result: BatchJobResult) -> None:
-        """Save batch results to JSON file."""
-        if not self.config.output_config.json_output_file:
-            return
-        
-        output_file = self.config.output_config.json_output_file
-        output_data = batch_result.model_dump(mode="json")
-        
-        # Convert Path objects to strings for JSON serialization
-        for result in output_data.get("results", []):
-            if result.get("screenshot_path"):
-                result["screenshot_path"] = str(result["screenshot_path"])
-        
-        with open(output_file, 'w') as f:
-            json.dump(output_data, f, indent=2, default=str)
-        
-        logger.info("results_saved", output_file=str(output_file))
+        """Analyze all configured sites using the Agno coordinator."""
+        return await self.coordinator.analyze_sites()
 
 
 @click.group()

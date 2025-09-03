@@ -12,6 +12,54 @@ class AIConfig(BaseModel):
     model: str = Field(default="gpt-4o")
     max_tokens: int = Field(default=1000)
     temperature: float = Field(default=0.1)
+    
+    # Agno-specific configuration
+    enable_reasoning: bool = Field(default=True, description="Enable reasoning tools for agents")
+    enable_structured_output: bool = Field(default=True, description="Use structured outputs")
+    agent_memory: bool = Field(default=False, description="Enable agent memory for conversation context")
+    
+    # Analysis prompts as properties for better Agno integration
+    @property
+    def trademark_analysis_prompt(self) -> str:
+        return """Analyze this website screenshot for trademark violations:
+        
+UK GOVERNMENT VIOLATIONS:
+- UK_GOVERNMENT_LOGO: Unauthorized use of UK Government logo or Crown symbol
+- UK_GOVERNMENT_CROWN: Misuse of Crown symbol or royal coat of arms  
+- UK_GOVERNMENT_COLORS: Using official government color schemes (distinctive blue/white)
+- UK_GOVERNMENT_TYPOGRAPHY: Copying government typography/fonts
+- OFFICIAL_ENDORSEMENT: Falsely implying government endorsement
+
+HMRC VIOLATIONS:
+- HMRC_LOGO: Unauthorized HMRC logo usage
+- HMRC_BRANDING: Copying HMRC design elements or color schemes
+- HMRC_IMPERSONATION: Impersonating HMRC services or forms
+
+CONFIDENCE SCORING:
+- High (0.8-1.0): Clear, obvious violation with strong visual similarity
+- Medium (0.5-0.7): Likely violation with some visual similarities
+- Low (0.2-0.4): Possible violation requiring further investigation
+
+Return detailed violations with specific confidence scores."""
+    
+    @property
+    def policy_analysis_prompt(self) -> str:
+        return """Analyze this website for policy compliance:
+        
+GDPR COMPLIANCE INDICATORS:
+- Privacy Policy presence and accessibility
+- Cookie policy and consent management
+- Data processing transparency
+- User rights information
+- Contact details for data protection
+
+POLICY TYPES TO IDENTIFY:
+- Privacy Policy, Privacy Statement, Privacy Notice
+- Terms and Conditions, Terms of Service, Terms of Use
+- Cookie Policy, Data Protection Policy
+- Legal Terms, User Agreement
+
+Assess policy quality and GDPR compliance level."""
 
 
 class TrademarkPrompts(BaseModel):
