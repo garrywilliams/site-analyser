@@ -5,20 +5,28 @@ A high-performance automated website analysis pipeline for compliance monitoring
 ## 🚀 Features
 
 - **Multi-Agent Architecture**: Powered by Agno framework for ~10,000x faster performance
+- **Comprehensive Compliance Analysis**: 10+ compliance checks including HTTPS, tax service relevance, personal data requests, website completeness, and language accessibility
 - **Trademark Violation Detection**: AI-powered visual analysis using GPT-4 Vision
-- **Compliance Monitoring**: GDPR, privacy policy, and terms & conditions analysis
+- **HMRC-Specific Compliance**: Specialized checks for HMRC partnership claims, terminology usage, and branding violations
+- **Personal Data Protection**: GDPR compliance assessment and inappropriate data collection detection
+- **Website Functionality Assessment**: Complete vs under-construction website detection
+- **Link Functionality Testing**: Concurrent testing of website navigation and links
+- **Language Accessibility**: Multi-language support and English translation capability analysis
 - **Bot Protection Detection**: Identifies Cloudflare, DDoS Guard, and other protections
 - **SSL Certificate Analysis**: Security and certificate validity checking
-- **HMRC Vendor Monitoring**: Specialized for UK Government/HMRC brand protection
 - **Batch Processing**: Concurrent analysis with intelligent rate limiting
 - **Multi-Modal**: Supports text, image, and structured data analysis
 
 ## 📋 Use Cases
 
-- **Government Brand Protection**: Monitor for unauthorized use of UK Government/HMRC branding
-- **Compliance Auditing**: Assess GDPR compliance across vendor websites
+- **Government Brand Protection**: Monitor for unauthorized use of UK Government/HMRC branding and partnership claims
+- **Tax Service Provider Monitoring**: Comprehensive compliance analysis for HMRC-recognized software providers
+- **GDPR & Data Privacy Auditing**: Assess personal data collection practices and GDPR compliance
+- **Website Functionality Assessment**: Identify incomplete or under-construction business websites
+- **Language Accessibility Compliance**: Ensure English accessibility for international tax service providers
 - **Security Assessment**: Analyze SSL certificates and security configurations
-- **Competitive Intelligence**: Monitor competitor websites for policy changes
+- **Link Functionality Testing**: Validate website navigation and user experience quality
+- **Competitive Intelligence**: Monitor competitor websites for policy and service changes
 - **Trademark Enforcement**: Automated detection of brand violations at scale
 
 ## 🏗️ Architecture
@@ -33,6 +41,11 @@ graph TB
         Coordinator --> WebAgent[WebScraperAgent]
         Coordinator --> PolicyAgent[PolicyAgent] 
         Coordinator --> TrademarkAgent[TrademarkAgent]
+        Coordinator --> ContentAgent[ContentRelevanceAgent]
+        Coordinator --> DataAgent[PersonalDataAgent]
+        Coordinator --> LinkAgent[LinkFunctionalityAgent]
+        Coordinator --> CompleteAgent[WebsiteCompletenessAgent]
+        Coordinator --> LangAgent[LanguageAnalysisAgent]
         Coordinator --> SSL[SSLProcessor]
         Coordinator --> BotDetector[BotProtectionDetector]
     end
@@ -41,6 +54,11 @@ graph TB
         WebAgent --> GPT4[GPT-4o/Claude]
         PolicyAgent --> GPT4
         TrademarkAgent --> GPT4Vision[GPT-4 Vision]
+        ContentAgent --> GPT4
+        DataAgent --> GPT4
+        LinkAgent --> GPT4
+        CompleteAgent --> GPT4
+        LangAgent --> GPT4
         Coordinator --> GPT4
     end
     
@@ -66,7 +84,7 @@ sequenceDiagram
     participant WebAgent
     participant SSL
     participant BotDetector
-    participant PolicyAgent
+    participant ComplianceAgents as Compliance Agents
     participant TrademarkAgent
     participant AI as AI Models
 
@@ -90,10 +108,14 @@ sequenceDiagram
         AI-->>Coordinator: Continue/Skip decision
         
         alt Should Continue Analysis
-            Coordinator->>PolicyAgent: analyze_policies()
-            PolicyAgent->>AI: Analyze HTML content
-            AI-->>PolicyAgent: Policy compliance
-            PolicyAgent-->>Coordinator: Policy results
+            Coordinator->>ComplianceAgents: Sequential compliance analysis
+            Note over ComplianceAgents: PolicyAgent, ContentRelevanceAgent,<br/>PersonalDataAgent, WebsiteCompletenessAgent,<br/>LanguageAnalysisAgent, LinkFunctionalityAgent
+            
+            loop Each Compliance Agent
+                ComplianceAgents->>AI: Analyze content
+                AI-->>ComplianceAgents: Compliance assessment
+                ComplianceAgents-->>Coordinator: Results
+            end
             
             Coordinator->>TrademarkAgent: analyze_violations()
             TrademarkAgent->>AI: Analyze screenshot
@@ -231,9 +253,9 @@ Success Rate: 95.0%
 
 📊 SITES OVERVIEW
 --------------------------------------------------------------------------------
-      Domain | Site Loads | HTTPS Valid | Bot Protection | Violations | Load Time
-   example.com |          ✅ |           ✅ |             ✅ |          0 |      1200
-  suspect.com |          ✅ |           ❌ |             ❌ |          3 |      2400
+      Domain | HTTPS | Privacy | Terms | Tax Relevant | Personal Data | Fully Functional | English Access | Violations
+   example.com |     ✅ |       ✅ |     ✅ |           ✅ |            ✅ |               ✅ |             ✅ |          0
+  suspect.com |     ❌ |       ❌ |     ❌ |           ❌ |           🚨 |               ❌ |             ❌ |          3
 
 🚨 TRADEMARK VIOLATIONS SUMMARY
 ----------------------------------------
@@ -247,8 +269,29 @@ TOTAL: 25 violations found
 Sites with valid HTTPS: 89/100 (89.0%)
 Sites with Privacy Policy: 76/100 (76.0%)
 Sites with Terms & Conditions: 82/100 (82.0%)
+
+🔍 ENHANCED COMPLIANCE METRICS
+----------------------------------------
+Tax service relevant content: 78/100 (78.0%)
+Sites requesting personal data: 15/100 (15.0%)
+GDPR compliant sites: 85/100 (85.0%)
+Fully functional websites: 82/100 (82.0%)
+English accessible sites: 91/100 (91.0%)
+
+⚠️  RISK METRICS
+----------------------------------------
 Sites with HIGH-RISK violations: 12/100 (12.0%)
 Sites blocking automated access: 15/100 (15.0%)
+
+🚨 PERSONAL DATA CONCERNS:
+  • suspect.com (GDPR: ❌)
+  • another-site.com (GDPR: ❌)
+
+📊 AVERAGE QUALITY SCORES
+----------------------------------------
+Average content relevance score: 7.2/10
+Average completeness score: 6.8/10
+Average link functionality score: 8.1/10
 ```
 
 ## 📊 Data Models
@@ -278,6 +321,11 @@ erDiagram
         string error_message
         int processing_duration_ms
         dict processor_versions
+        dict content_relevance
+        dict personal_data_analysis
+        dict link_functionality
+        dict website_completeness
+        dict language_analysis
     }
     
     TrademarkViolation {
@@ -317,6 +365,8 @@ erDiagram
 - `HMRC_LOGO` - Unauthorized HMRC logo usage
 - `HMRC_BRANDING` - HMRC design elements or styling
 - `HMRC_IMPERSONATION` - Impersonating HMRC services
+- `HMRC_PARTNERSHIP` - Falsely claiming partnership with HMRC
+- `HMRC_RECOGNISED_MISUSE` - Incorrect use of "HMRC recognised" terminology
 - `OFFICIAL_ENDORSEMENT` - Falsely implying government endorsement
 
 ## ⚙️ Configuration
@@ -378,7 +428,12 @@ Each Agno agent can be configured with:
 - Respectful crawling practices
 
 ### Compliance Features
-- **GDPR Assessment**: Privacy policy analysis
+- **GDPR Assessment**: Privacy policy and personal data collection analysis
+- **Tax Service Compliance**: Content relevance to legitimate tax services
+- **Website Completeness**: Identification of under-construction or incomplete sites
+- **Language Accessibility**: English translation capability assessment
+- **Link Functionality**: Navigation and user experience validation
+- **HMRC Specific Checks**: Partnership claims and terminology compliance
 - **Cookie Compliance**: Cookie policy detection
 - **Terms Analysis**: Terms & conditions evaluation
 - **SSL Security**: Certificate validation
@@ -449,10 +504,12 @@ spec:
 
 ### Performance Metrics
 
-- **Agent Performance**: ~3μs instantiation time
-- **Memory Usage**: ~6.5KB per agent
-- **Processing Speed**: ~50 sites/minute with rate limiting
+- **Agent Performance**: ~3μs instantiation time per agent
+- **Memory Usage**: ~6.5KB per agent instance
+- **Processing Speed**: ~30-50 sites/minute with rate limiting (depends on compliance analysis depth)
 - **Accuracy**: 95%+ trademark violation detection
+- **Compliance Coverage**: 10+ comprehensive compliance checks per site
+- **Concurrent Analysis**: Up to 8 specialized agents per site
 
 ### Health Checks
 

@@ -73,16 +73,37 @@ class TrademarkAgent:
             - HMRC_LOGO: Unauthorized HMRC logo usage
             - HMRC_BRANDING: Copying HMRC design elements
             - HMRC_IMPERSONATION: Impersonating HMRC services
+            - HMRC_PARTNERSHIP: Falsely claiming partnership with HMRC
+            - HMRC_RECOGNISED_MISUSE: Incorrect use of "HMRC recognised" terminology
             - OFFICIAL_ENDORSEMENT: Falsely implying government endorsement
             
             ANALYSIS CRITERIA:
             {self.config.ai_config.trademark_analysis_prompt}
             
-            Your task: Analyze website screenshots for trademark violations. Provide:
+            SPECIFIC COMPLIANCE REQUIREMENTS:
+            
+            HMRC PARTNERSHIP CLAIMS:
+            - Look for phrases like "HMRC partner", "partnered with HMRC", "HMRC partnership"
+            - Flag claims of official business relationships with HMRC
+            - Allow legitimate software recognition but not partnership claims
+            
+            HMRC RECOGNISED TERMINOLOGY:
+            - ALLOWED: "HMRC recognised" (exactly this phrase for approved software)
+            - VIOLATIONS: "HMRC approved", "HMRC certified", "HMRC endorsed"
+            - VIOLATIONS: "HMRC recommended", "HMRC verified", "HMRC validated"
+            - Context matters: must relate to legitimate software recognition
+            
+            LOGO AND BRANDING:
+            - Any use of HMRC logos or official government logos
+            - Crown symbols, government coat of arms, or official seals
+            - Government color schemes (specific blue/white government styling)
+            - Typography that mimics official government communications
+            
+            Your task: Analyze website screenshots AND text content for trademark violations. Provide:
             1. Detailed violation descriptions
             2. Confidence scores (0.0-1.0)
             3. Specific violation categories
-            4. Evidence locations in the image
+            4. Evidence locations in the image or text
             
             IMPORTANT: If no violations are found, simply respond with "No trademark violations detected."
             If violations are found, list them clearly with violation type, description, and confidence score.
@@ -106,10 +127,18 @@ class TrademarkAgent:
             # Prepare image for analysis
             image_base64 = self.analysis_tool.encode_image(result.screenshot_path)
             
-            # Create analysis prompt with image
+            # Prepare text content for analysis (truncate if too long)
+            text_content = ""
+            if result.html_content:
+                text_content = result.html_content[:4000] if len(result.html_content) > 4000 else result.html_content
+            
+            # Create analysis prompt with image AND text
             analysis_prompt = f"""
-            Analyze this website screenshot for trademark violations.
+            Analyze this website screenshot AND text content for trademark violations.
             Website URL: {url}
+            
+            Text Content Analysis:
+            {text_content}
             
             Look for unauthorized use of:
             - UK Government logos, symbols, or branding
@@ -118,6 +147,12 @@ class TrademarkAgent:
             - Government color schemes (distinctive blue/white government styling)
             - Typography that mimics government websites
             - Any elements that could confuse users about official endorsement
+            
+            SPECIFIC TEXT VIOLATIONS TO CHECK:
+            - Claims of "HMRC partnership" or being "partnered with HMRC"
+            - Incorrect terminology: "HMRC approved/certified/endorsed/recommended"
+            - Only "HMRC recognised" is allowed for legitimate software
+            - False government endorsement claims
             
             RESPOND IN THIS FORMAT:
             If no violations: "No trademark violations detected."
@@ -181,7 +216,8 @@ class TrademarkAgent:
                         # Try to extract violation type
                         for vtype in ['UK_GOVERNMENT_LOGO', 'UK_GOVERNMENT_CROWN', 'UK_GOVERNMENT_COLORS', 
                                     'UK_GOVERNMENT_TYPOGRAPHY', 'HMRC_LOGO', 'HMRC_BRANDING', 
-                                    'HMRC_IMPERSONATION', 'OFFICIAL_ENDORSEMENT']:
+                                    'HMRC_IMPERSONATION', 'HMRC_PARTNERSHIP', 'HMRC_RECOGNISED_MISUSE',
+                                    'OFFICIAL_ENDORSEMENT']:
                             if vtype in line.upper():
                                 violation_type = vtype
                                 break

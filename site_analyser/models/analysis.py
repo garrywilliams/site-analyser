@@ -32,7 +32,9 @@ class TrademarkViolation(BaseModel):
     violation_type: str
     confidence: float
     description: str
+    location: Optional[str] = None  # Location where violation was found
     coordinates: Optional[dict] = None  # x, y, width, height if available
+    detected_at: Optional[datetime] = None  # When the violation was detected
 
 
 class BotProtectionAnalysis(BaseModel):
@@ -68,6 +70,13 @@ class SiteAnalysisResult(BaseModel):
     
     # Trademark analysis
     trademark_violations: list[TrademarkViolation] = []
+    
+    # New compliance analysis fields
+    content_relevance: Optional[dict] = None  # Content relevance to tax services
+    personal_data_analysis: Optional[dict] = None  # Personal data request detection
+    link_functionality: Optional[dict] = None  # Link functionality testing
+    website_completeness: Optional[dict] = None  # Website completeness assessment
+    language_analysis: Optional[dict] = None  # Language and translation capability
     
     # Processing metadata
     processing_duration_ms: int

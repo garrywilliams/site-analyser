@@ -20,6 +20,11 @@ from ..processors.bot_protection_detector import BotProtectionDetectorProcessor
 from .web_scraper_agent import WebScraperAgent
 from .trademark_agent import TrademarkAgent
 from .policy_agent import PolicyAgent
+from .content_relevance_agent import ContentRelevanceAgent
+from .personal_data_agent import PersonalDataAgent
+from .link_functionality_agent import LinkFunctionalityAgent
+from .website_completeness_agent import WebsiteCompletenessAgent
+from .language_analysis_agent import LanguageAnalysisAgent
 
 logger = structlog.get_logger()
 
@@ -44,6 +49,11 @@ class SiteAnalysisCoordinator:
         self.web_scraper = WebScraperAgent(config)
         self.trademark_agent = TrademarkAgent(config)
         self.policy_agent = PolicyAgent(config)
+        self.content_relevance_agent = ContentRelevanceAgent(config)
+        self.personal_data_agent = PersonalDataAgent(config)
+        self.link_functionality_agent = LinkFunctionalityAgent(config)
+        self.website_completeness_agent = WebsiteCompletenessAgent(config)
+        self.language_analysis_agent = LanguageAnalysisAgent(config)
         
         # Initialize traditional processors for SSL and bot detection
         self.ssl_processor = SSLProcessor(config)
@@ -63,7 +73,16 @@ class SiteAnalysisCoordinator:
             analysis workflows. Your responsibilities include:
             
             1. WORKFLOW ORCHESTRATION
-            - Coordinate web scraping, policy analysis, and trademark detection
+            - Coordinate comprehensive compliance analysis including:
+              * Web scraping and content extraction
+              * SSL/HTTPS security analysis
+              * Policy and legal compliance (Privacy Policy, T&Cs)
+              * Trademark and branding violations
+              * Content relevance to tax services
+              * Personal data request detection
+              * Website completeness and functionality
+              * Link functionality testing
+              * Language accessibility and translation capabilities
             - Optimize analysis order based on site characteristics
             - Handle failures and retry strategies
             - Manage resource allocation and rate limiting
@@ -189,12 +208,40 @@ class SiteAnalysisCoordinator:
                 if result.site_loads and result.html_content:
                     result = await self.policy_agent.analyze_policies(url, result)
                 
-                # Step 6: Trademark analysis (if screenshot available)
-                if result.screenshot_path and result.screenshot_path.exists():
-                    # Add rate limiting for AI requests
+                # Step 6: Content relevance analysis
+                if result.site_loads and result.html_content:
                     if self.config.processing_config.ai_request_delay_seconds > 0:
                         await asyncio.sleep(self.config.processing_config.ai_request_delay_seconds)
-                    
+                    result = await self.content_relevance_agent.analyze_content_relevance(url, result)
+                
+                # Step 7: Personal data analysis
+                if result.site_loads and result.html_content:
+                    if self.config.processing_config.ai_request_delay_seconds > 0:
+                        await asyncio.sleep(self.config.processing_config.ai_request_delay_seconds)
+                    result = await self.personal_data_agent.analyze_personal_data_requests(url, result)
+                
+                # Step 8: Website completeness analysis
+                if result.site_loads and result.html_content:
+                    if self.config.processing_config.ai_request_delay_seconds > 0:
+                        await asyncio.sleep(self.config.processing_config.ai_request_delay_seconds)
+                    result = await self.website_completeness_agent.analyze_website_completeness(url, result)
+                
+                # Step 9: Language analysis
+                if result.site_loads and result.html_content:
+                    if self.config.processing_config.ai_request_delay_seconds > 0:
+                        await asyncio.sleep(self.config.processing_config.ai_request_delay_seconds)
+                    result = await self.language_analysis_agent.analyze_language_capabilities(url, result)
+                
+                # Step 10: Link functionality analysis
+                if result.site_loads and result.html_content:
+                    if self.config.processing_config.ai_request_delay_seconds > 0:
+                        await asyncio.sleep(self.config.processing_config.ai_request_delay_seconds)
+                    result = await self.link_functionality_agent.analyze_link_functionality(url, result)
+                
+                # Step 11: Trademark analysis (if screenshot available)
+                if result.screenshot_path and result.screenshot_path.exists():
+                    if self.config.processing_config.ai_request_delay_seconds > 0:
+                        await asyncio.sleep(self.config.processing_config.ai_request_delay_seconds)
                     result = await self.trademark_agent.analyze_trademark_violations(url, result)
             else:
                 logger.info(
@@ -212,6 +259,11 @@ class SiteAnalysisCoordinator:
                 "WebScraperAgent": "1.0.0",
                 "TrademarkAgent": "1.0.0", 
                 "PolicyAgent": "1.0.0",
+                "ContentRelevanceAgent": "1.0.0",
+                "PersonalDataAgent": "1.0.0",
+                "LinkFunctionalityAgent": "1.0.0",
+                "WebsiteCompletenessAgent": "1.0.0",
+                "LanguageAnalysisAgent": "1.0.0",
                 "SSLProcessor": "1.0.0",
                 "BotProtectionDetectorProcessor": "1.0.0",
                 "SiteAnalysisCoordinator": "1.0.0"
