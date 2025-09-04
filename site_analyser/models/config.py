@@ -109,6 +109,12 @@ class ProcessingConfig(BaseModel):
     max_retries: int = Field(default=3, ge=0, le=10)
     retry_delay_seconds: int = Field(default=2, ge=1, le=30)
     ai_request_delay_seconds: float = Field(default=1.0, ge=0.1, le=10.0, description="Delay between AI API requests to avoid rate limits")
+    
+    # Bot evasion settings
+    use_stealth_mode: bool = Field(default=True, description="Enable bot detection evasion techniques")
+    random_user_agents: bool = Field(default=True, description="Use random realistic user agents")
+    simulate_human_behavior: bool = Field(default=True, description="Add mouse movements, scrolling, delays")
+    handle_captcha_challenges: bool = Field(default=True, description="Attempt to handle basic CAPTCHA challenges")
 
 
 class OutputConfig(BaseModel):

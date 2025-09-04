@@ -84,6 +84,26 @@ def cli(ctx, debug: bool):
     default=1.5,
     help='Delay between AI API requests in seconds (to avoid rate limits)'
 )
+@click.option(
+    '--stealth/--no-stealth',
+    default=True,
+    help='Enable/disable bot detection evasion techniques'
+)
+@click.option(
+    '--random-agents/--no-random-agents',
+    default=True,
+    help='Use random realistic user agents'
+)
+@click.option(
+    '--human-behavior/--no-human-behavior',
+    default=True,
+    help='Simulate human-like mouse movements and delays'
+)
+@click.option(
+    '--handle-captcha/--no-handle-captcha',
+    default=True,
+    help='Attempt to handle basic CAPTCHA challenges'
+)
 @click.pass_context
 def analyze(
     ctx,
@@ -93,7 +113,11 @@ def analyze(
     output_dir: Path,
     concurrent_requests: int,
     ai_provider: str,
-    ai_delay: float
+    ai_delay: float,
+    stealth: bool,
+    random_agents: bool,
+    human_behavior: bool,
+    handle_captcha: bool
 ):
     """Analyze websites for compliance and trademark violations."""
     debug = ctx.obj.get('debug', False)
@@ -124,7 +148,11 @@ def analyze(
             ai_config=AIConfig(provider=ai_provider),
             processing_config=ProcessingConfig(
                 concurrent_requests=concurrent_requests,
-                ai_request_delay_seconds=ai_delay
+                ai_request_delay_seconds=ai_delay,
+                use_stealth_mode=stealth,
+                random_user_agents=random_agents,
+                simulate_human_behavior=human_behavior,
+                handle_captcha_challenges=handle_captcha
             ),
             output_config=OutputConfig(
                 results_directory=output_dir,
