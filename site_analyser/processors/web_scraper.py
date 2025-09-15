@@ -56,7 +56,9 @@ class WebScraperProcessor(BaseProcessor):
             page = await self.browser.new_page()
             
             # Set viewport for consistent screenshots
-            await page.set_viewport_size({"width": 1920, "height": 1080})
+            viewport_width = getattr(self.config.processing_config, 'viewport_width', 1920)
+            viewport_height = getattr(self.config.processing_config, 'viewport_height', 1080)
+            await page.set_viewport_size({"width": viewport_width, "height": viewport_height})
             
             # Navigate to page with timeout
             load_start = datetime.now()

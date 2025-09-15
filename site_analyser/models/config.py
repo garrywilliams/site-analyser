@@ -13,6 +13,11 @@ class AIConfig(BaseModel):
     max_tokens: int = Field(default=1000)
     temperature: float = Field(default=0.1)
     
+    # OpenAI-compatible API configuration
+    base_url: Optional[str] = Field(default=None, description="Custom base URL for OpenAI-compatible APIs")
+    organization: Optional[str] = Field(default=None, description="OpenAI organization ID")
+    timeout: Optional[float] = Field(default=60.0, description="API request timeout in seconds")
+    
     # Agno-specific configuration
     enable_reasoning: bool = Field(default=True, description="Enable reasoning tools for agents")
     enable_structured_output: bool = Field(default=True, description="Use structured outputs")
@@ -115,6 +120,10 @@ class ProcessingConfig(BaseModel):
     random_user_agents: bool = Field(default=True, description="Use random realistic user agents")
     simulate_human_behavior: bool = Field(default=True, description="Add mouse movements, scrolling, delays")
     handle_captcha_challenges: bool = Field(default=True, description="Attempt to handle basic CAPTCHA challenges")
+    
+    # Screenshot viewport settings
+    viewport_width: int = Field(default=1920, ge=800, le=4000, description="Browser viewport width for screenshots")
+    viewport_height: int = Field(default=1080, ge=600, le=3000, description="Browser viewport height for screenshots")
 
 
 class OutputConfig(BaseModel):

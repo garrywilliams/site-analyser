@@ -10,6 +10,7 @@ client<llm> GPT4Vision {
     model gpt-4o
     max_tokens 2000
     temperature 0.1
+    base_url env.OPENAI_BASE_URL
   }
 }
 

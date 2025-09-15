@@ -26,7 +26,22 @@ class AIClient:
         
         if config.provider.lower() == "openai":
             import openai
-            self.client = openai.AsyncOpenAI(api_key=config.api_key)
+            # Build OpenAI client kwargs
+            client_kwargs = {
+                "api_key": config.api_key,
+                "timeout": config.timeout or 60.0
+            }
+            
+            # Add custom base URL if provided (for OpenAI-compatible APIs)
+            if config.base_url:
+                client_kwargs["base_url"] = config.base_url
+                logger.info("openai_custom_base_url", base_url=config.base_url)
+            
+            # Add organization if provided
+            if config.organization:
+                client_kwargs["organization"] = config.organization
+            
+            self.client = openai.AsyncOpenAI(**client_kwargs)
         elif config.provider.lower() == "anthropic":
             import anthropic
             self.client = anthropic.AsyncAnthropic(api_key=config.api_key)

@@ -85,6 +85,11 @@ def cli(ctx, debug: bool):
     help='Delay between AI API requests in seconds (to avoid rate limits)'
 )
 @click.option(
+    '--ai-base-url',
+    type=str,
+    help='Custom base URL for OpenAI-compatible APIs (e.g., your local proxy)'
+)
+@click.option(
     '--stealth/--no-stealth',
     default=True,
     help='Enable/disable bot detection evasion techniques'
@@ -114,6 +119,7 @@ def analyze(
     concurrent_requests: int,
     ai_provider: str,
     ai_delay: float,
+    ai_base_url: Optional[str],
     stealth: bool,
     random_agents: bool,
     human_behavior: bool,
@@ -143,9 +149,13 @@ def analyze(
         
         from .models.config import AIConfig, ProcessingConfig, OutputConfig
         
+        ai_config_kwargs = {"provider": ai_provider}
+        if ai_base_url:
+            ai_config_kwargs["base_url"] = ai_base_url
+        
         site_config = SiteAnalyserConfig(
             urls=url_list,
-            ai_config=AIConfig(provider=ai_provider),
+            ai_config=AIConfig(**ai_config_kwargs),
             processing_config=ProcessingConfig(
                 concurrent_requests=concurrent_requests,
                 ai_request_delay_seconds=ai_delay,
@@ -310,8 +320,13 @@ def scrape_urls(ctx, source_url: str, output_file: Path, format: str, minimal: b
     default=2.0,
     help='Delay between AI API requests in seconds (higher for bulk processing)'
 )
+@click.option(
+    '--ai-base-url',
+    type=str,
+    help='Custom base URL for OpenAI-compatible APIs (e.g., your local proxy)'
+)
 @click.pass_context
-def scrape_and_analyze(ctx, source_url: str, output_dir: Path, concurrent_requests: int, ai_provider: str, ai_delay: float):
+def scrape_and_analyze(ctx, source_url: str, output_dir: Path, concurrent_requests: int, ai_provider: str, ai_delay: float, ai_base_url: Optional[str]):
     """Scrape HMRC software list and analyze all vendor websites."""
     debug = ctx.obj.get('debug', False)
     
@@ -336,9 +351,13 @@ def scrape_and_analyze(ctx, source_url: str, output_dir: Path, concurrent_reques
         # Create configuration for analysis
         from .models.config import AIConfig, ProcessingConfig, OutputConfig
         
+        ai_config_kwargs = {"provider": ai_provider}
+        if ai_base_url:
+            ai_config_kwargs["base_url"] = ai_base_url
+        
         site_config = SiteAnalyserConfig(
             urls=unique_urls,
-            ai_config=AIConfig(provider=ai_provider),
+            ai_config=AIConfig(**ai_config_kwargs),
             processing_config=ProcessingConfig(
                 concurrent_requests=concurrent_requests,
                 ai_request_delay_seconds=ai_delay
@@ -371,6 +390,182 @@ def scrape_and_analyze(ctx, source_url: str, output_dir: Path, concurrent_reques
             click.echo(f"⚠️  High-confidence trademark violations: {high_confidence_violations}")
     
     asyncio.run(scrape_then_analyze())
+
+
+@cli.command()
+@click.option(
+    '--urls',
+    multiple=True,
+    help='URLs to capture screenshots for (can be specified multiple times)'
+)
+@click.option(
+    '--urls-file',
+    type=click.Path(exists=True, path_type=Path),
+    help='Text file containing URLs to screenshot (one per line)'
+)
+@click.option(
+    '--output-dir', '-o',
+    type=click.Path(path_type=Path),
+    default=Path('./screenshots'),
+    help='Output directory for screenshots'
+)
+@click.option(
+    '--concurrent-requests', '-j',
+    type=int,
+    default=5,
+    help='Number of concurrent screenshot captures'
+)
+@click.option(
+    '--timeout',
+    type=int,
+    default=15,
+    help='Screenshot timeout in seconds'
+)
+@click.option(
+    '--viewport-width',
+    type=int,
+    default=1920,
+    help='Browser viewport width for screenshots'
+)
+@click.option(
+    '--viewport-height',
+    type=int,
+    default=1080,
+    help='Browser viewport height for screenshots'
+)
+@click.option(
+    '--stealth/--no-stealth',
+    default=True,
+    help='Enable/disable bot detection evasion techniques'
+)
+@click.pass_context
+def screenshot(
+    ctx,
+    urls: tuple[str, ...],
+    urls_file: Optional[Path],
+    output_dir: Path,
+    concurrent_requests: int,
+    timeout: int,
+    viewport_width: int,
+    viewport_height: int,
+    stealth: bool
+):
+    """Capture screenshots of websites using Playwright (no AI analysis)."""
+    debug = ctx.obj.get('debug', False)
+    
+    async def capture_screenshots():
+        # Collect URLs from various sources
+        url_list = list(urls) if urls else []
+        
+        # Load URLs from file if provided
+        if urls_file:
+            with open(urls_file, 'r') as f:
+                file_urls = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+                url_list.extend(file_urls)
+        
+        if not url_list:
+            raise click.ClickException("Either --urls or --urls-file must be provided")
+        
+        # Create output directory
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Setup configuration for web scraping only
+        from .models.config import SiteAnalyserConfig, ProcessingConfig, OutputConfig
+        
+        config = SiteAnalyserConfig(
+            urls=url_list,
+            processing_config=ProcessingConfig(
+                concurrent_requests=concurrent_requests,
+                screenshot_timeout_seconds=timeout,
+                use_stealth_mode=stealth,
+                viewport_width=viewport_width,
+                viewport_height=viewport_height
+            ),
+            output_config=OutputConfig(
+                results_directory=output_dir,
+                screenshots_directory=output_dir,
+                json_output_file=output_dir / "screenshot_results.json"
+            )
+        )
+        
+        # Import and use web scraper processor directly
+        from .processors.web_scraper import WebScraperProcessor
+        from .models.analysis import SiteAnalysisResult, AnalysisStatus
+        from datetime import datetime
+        
+        click.echo(f"🖼️  Capturing screenshots for {len(url_list)} URLs...")
+        click.echo(f"📁 Output directory: {output_dir}")
+        click.echo(f"⚙️  Viewport: {viewport_width}x{viewport_height}")
+        click.echo(f"⏱️  Timeout: {timeout}s per URL")
+        click.echo(f"🔧 Concurrent requests: {concurrent_requests}")
+        
+        results = []
+        semaphore = asyncio.Semaphore(concurrent_requests)
+        
+        async def capture_single_screenshot(url: str):
+            async with semaphore:
+                async with WebScraperProcessor(config) as processor:
+                    # Override viewport size if specified
+                    if hasattr(processor, 'browser') and processor.browser:
+                        # This will be handled in the processor
+                        pass
+                    
+                    # Create initial result
+                    result = SiteAnalysisResult(
+                        url=url,
+                        timestamp=datetime.now(),
+                        status=AnalysisStatus.SUCCESS,
+                        site_loads=True,
+                        processing_duration_ms=0
+                    )
+                    
+                    # Process the screenshot
+                    result = await processor.process(url, result)
+                    return result
+        
+        # Process all URLs concurrently
+        tasks = [capture_single_screenshot(url) for url in url_list]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Process results and show summary
+        successful = 0
+        failed = 0
+        
+        for i, result in enumerate(results):
+            url = url_list[i]
+            if isinstance(result, Exception):
+                click.echo(f"❌ {url}: {result}")
+                failed += 1
+            elif result.site_loads and result.screenshot_path:
+                click.echo(f"✅ {url}: {result.screenshot_path.name}")
+                successful += 1
+            else:
+                click.echo(f"⚠️  {url}: {result.error_message or 'Screenshot failed'}")
+                failed += 1
+        
+        # Save results summary
+        summary = {
+            "timestamp": datetime.now().isoformat(),
+            "total_urls": len(url_list),
+            "successful": successful,
+            "failed": failed,
+            "urls": url_list,
+            "output_directory": str(output_dir),
+            "viewport": f"{viewport_width}x{viewport_height}",
+            "timeout_seconds": timeout
+        }
+        
+        import json
+        with open(output_dir / "screenshot_results.json", 'w') as f:
+            json.dump(summary, f, indent=2)
+        
+        # Final summary
+        click.echo(f"\n📊 Screenshot capture completed!")
+        click.echo(f"✅ Successful: {successful}")
+        click.echo(f"❌ Failed: {failed}")
+        click.echo(f"📁 Screenshots saved to: {output_dir}")
+    
+    asyncio.run(capture_screenshots())
 
 
 if __name__ == "__main__":

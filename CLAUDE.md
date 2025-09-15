@@ -22,6 +22,12 @@ uv run site-analyser --urls https://example.com --ai-provider openai
 # Run with config file
 uv run site-analyser --config example-config.json
 
+# Run with custom OpenAI-compatible proxy
+uv run site-analyser --urls https://example.com --ai-base-url http://localhost:8000/v1
+
+# Capture screenshots only (no AI analysis)
+uv run site-analyser screenshot --urls https://example.com --output-dir ./screenshots
+
 # Run tests
 uv run pytest
 
@@ -97,6 +103,7 @@ Required:
 Optional:
 - `AI_PROVIDER`: Choose between "openai" or "anthropic"
 - `AI_MODEL`: Specify AI model to use
+- `OPENAI_BASE_URL`: Custom base URL for OpenAI-compatible APIs (e.g., local proxy or alternative service)
 
 ## Testing
 

@@ -7,7 +7,9 @@
     "provider": "openai",
     "model": "gpt-4o",
     "max_tokens": 1000,
-    "temperature": 0.1
+    "temperature": 0.1,
+    "base_url": "http://localhost:8000/v1",
+    "timeout": 60.0
   },
   "processing_config": {
     "concurrent_requests": 5,
