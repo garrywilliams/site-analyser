@@ -438,6 +438,11 @@ def scrape_and_analyze(ctx, source_url: str, output_dir: Path, concurrent_reques
     default=True,
     help='Enable/disable bot detection evasion techniques'
 )
+@click.option(
+    '--verbose', '-v',
+    is_flag=True,
+    help='Enable verbose logging output'
+)
 @click.pass_context
 def screenshot(
     ctx,
@@ -448,10 +453,17 @@ def screenshot(
     timeout: int,
     viewport_width: int,
     viewport_height: int,
-    stealth: bool
+    stealth: bool,
+    verbose: bool
 ):
     """Capture screenshots of websites using Playwright (no AI analysis)."""
-    debug = ctx.obj.get('debug', False)
+    debug = ctx.obj.get('debug', False) or verbose
+    
+    # Set up logging level based on verbose flag
+    if verbose:
+        import logging
+        logging.getLogger().setLevel(logging.DEBUG)
+        click.echo(f"🔊 Verbose logging enabled")
     
     async def capture_screenshots():
         # Collect URLs from various sources
@@ -494,34 +506,51 @@ def screenshot(
         from datetime import datetime
         
         click.echo(f"🖼️  Capturing screenshots for {len(url_list)} URLs...")
-        click.echo(f"📁 Output directory: {output_dir}")
+        click.echo(f"📁 Output directory: {output_dir.absolute()}")
         click.echo(f"⚙️  Viewport: {viewport_width}x{viewport_height}")
         click.echo(f"⏱️  Timeout: {timeout}s per URL")
         click.echo(f"🔧 Concurrent requests: {concurrent_requests}")
+        click.echo(f"🔍 Debug mode: {debug}")
+        click.echo(f"📋 URLs to process:")
+        for i, url in enumerate(url_list, 1):
+            click.echo(f"   {i}. {url}")
         
         results = []
         semaphore = asyncio.Semaphore(concurrent_requests)
         
         async def capture_single_screenshot(url: str):
             async with semaphore:
-                async with WebScraperProcessor(config) as processor:
-                    # Override viewport size if specified
-                    if hasattr(processor, 'browser') and processor.browser:
-                        # This will be handled in the processor
-                        pass
+                try:
+                    click.echo(f"🚀 Starting screenshot capture for: {url}")
                     
-                    # Create initial result
-                    result = SiteAnalysisResult(
-                        url=url,
-                        timestamp=datetime.now(),
-                        status=AnalysisStatus.SUCCESS,
-                        site_loads=True,
-                        processing_duration_ms=0
-                    )
-                    
-                    # Process the screenshot
-                    result = await processor.process(url, result)
-                    return result
+                    async with WebScraperProcessor(config) as processor:
+                        click.echo(f"📱 Browser initialized for: {url}")
+                        
+                        # Create initial result
+                        result = SiteAnalysisResult(
+                            url=url,
+                            timestamp=datetime.now(),
+                            status=AnalysisStatus.SUCCESS,
+                            site_loads=True,
+                            processing_duration_ms=0
+                        )
+                        
+                        # Process the screenshot
+                        result = await processor.process(url, result)
+                        
+                        if result.screenshot_path:
+                            click.echo(f"📸 Screenshot saved: {result.screenshot_path}")
+                            click.echo(f"📍 Full path: {result.screenshot_path.absolute()}")
+                        else:
+                            click.echo(f"❌ No screenshot path set for: {url}")
+                        
+                        return result
+                        
+                except Exception as e:
+                    click.echo(f"💥 Exception in capture_single_screenshot for {url}: {e}")
+                    import traceback
+                    click.echo(f"🔍 Traceback: {traceback.format_exc()}")
+                    return e
         
         # Process all URLs concurrently
         tasks = [capture_single_screenshot(url) for url in url_list]

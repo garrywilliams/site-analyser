@@ -125,9 +125,14 @@ class WebScraperProcessor(BaseProcessor):
     
     async def _capture_screenshot(self, page: Page, url: str, result: SiteAnalysisResult) -> None:
         """Capture a screenshot of the current page."""
+        logger.info("screenshot_capture_started", url=url)
+        
         # Ensure screenshots directory exists
         screenshots_dir = self.config.output_config.screenshots_directory
+        logger.info("screenshot_directory_check", directory=str(screenshots_dir.absolute()), exists=screenshots_dir.exists())
+        
         screenshots_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("screenshot_directory_created", directory=str(screenshots_dir.absolute()))
         
         # Generate filename from URL
         from urllib.parse import urlparse
@@ -140,15 +145,37 @@ class WebScraperProcessor(BaseProcessor):
         screenshot_filename = f"{safe_filename}_{timestamp}.png"
         screenshot_path = screenshots_dir / screenshot_filename
         
+        logger.info("screenshot_path_generated", 
+                   url=url, 
+                   filename=screenshot_filename, 
+                   full_path=str(screenshot_path.absolute()))
+        
         # Wait a moment for any dynamic content to load
         await asyncio.sleep(2)
         
-        # Take full page screenshot
-        await page.screenshot(
-            path=str(screenshot_path),
-            full_page=True,
-            type="png"
-        )
+        try:
+            # Take full page screenshot
+            logger.info("taking_screenshot", url=url, path=str(screenshot_path))
+            await page.screenshot(
+                path=str(screenshot_path),
+                full_page=True,
+                type="png"
+            )
+            
+            # Verify screenshot was created
+            if screenshot_path.exists():
+                file_size = screenshot_path.stat().st_size
+                logger.info("screenshot_created_successfully", 
+                           url=url, 
+                           path=str(screenshot_path.absolute()),
+                           size_bytes=file_size)
+            else:
+                logger.error("screenshot_file_not_found", url=url, path=str(screenshot_path.absolute()))
+            
+            result.screenshot_path = screenshot_path
+            
+        except Exception as e:
+            logger.error("screenshot_capture_failed", url=url, error=str(e), path=str(screenshot_path))
+            raise
         
-        result.screenshot_path = screenshot_path
-        logger.debug("screenshot_captured", url=url, path=str(screenshot_path))
+        logger.info("screenshot_capture_completed", url=url, path=str(screenshot_path))
