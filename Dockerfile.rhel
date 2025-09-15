@@ -1,11 +1,13 @@
-# Multi-stage build for site-analyser
-FROM python:3.11-slim AS builder
+# Multi-stage build for site-analyser (RHEL/CentOS/Fedora version)
+FROM registry.access.redhat.com/ubi8/python-39 AS builder
 
 # Install system dependencies needed for building
-RUN apt-get update && apt-get install -y \
-    build-essential \
+RUN dnf update -y && dnf install -y \
+    gcc \
+    gcc-c++ \
+    make \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && dnf clean all
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
@@ -22,34 +24,51 @@ RUN uv venv /opt/venv
 RUN uv pip install -e .
 
 # Production stage
-FROM python:3.11-slim
+FROM registry.access.redhat.com/ubi8/python-39
 
-# Install system dependencies for Playwright and SSL
-RUN apt-get update && apt-get install -y \
-    # Playwright browser dependencies
+# Install system dependencies for Playwright and SSL (DNF version)
+RUN dnf update -y && dnf install -y \
+    # Basic tools
     wget \
-    gnupg \
+    curl \
     ca-certificates \
-    fonts-liberation \
-    libasound2 \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libatspi2.0-0 \
-    libdrm2 \
-    libgtk-3-0 \
-    libicu66 \
-    libnspr4 \
-    libnss3 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxrandr2 \
-    libxss1 \
-    libxtst6 \
-    xvfb \
+    # Font support
+    liberation-fonts \
+    dejavu-sans-fonts \
+    # Audio support
+    alsa-lib \
+    # GTK and X11 libraries
+    at-spi2-atk \
+    at-spi2-core \
+    atk \
+    gtk3 \
+    # Graphics and rendering
+    libdrm \
+    mesa-libgbm \
+    libXcomposite \
+    libXdamage \
+    libXfixes \
+    libXrandr \
+    libXScrnSaver \
+    libXtst \
+    # NSS (Network Security Services)
+    nss \
+    nspr \
+    # ICU (International Components for Unicode)
+    libicu \
+    # Additional X11 libraries
+    libX11 \
+    libXcb \
+    libXcursor \
+    libXext \
+    libXi \
+    libxkbcommon \
+    libXrender \
+    # Virtual framebuffer for headless
+    xorg-x11-server-Xvfb \
     # SSL/TLS support
     openssl \
-    && rm -rf /var/lib/apt/lists/*
+    && dnf clean all
 
 # Copy Python environment from builder
 COPY --from=builder /opt/venv /opt/venv

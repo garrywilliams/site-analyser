@@ -25,15 +25,62 @@ class WebScraperProcessor(BaseProcessor):
     async def __aenter__(self):
         """Async context manager entry."""
         self.playwright = await async_playwright().start()
+        
+        # Check if we should use system Chrome (for corporate environments)
+        import os
+        use_system_chrome = os.getenv('USE_SYSTEM_CHROME', '').lower() in ('true', '1', 'yes')
+        
+        browser_args = [
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-web-security",
+            "--disable-features=VizDisplayCompositor",
+            "--ignore-certificate-errors-spki-list",
+            "--ignore-certificate-errors",
+            "--ignore-ssl-errors",
+            "--accept-insecure-certs"
+        ]
+        
+        if use_system_chrome:
+            # Try to use system Chrome installation
+            logger.info("using_system_chrome", message="Attempting to use system Chrome browser")
+            try:
+                # Common Chrome paths
+                chrome_paths = [
+                    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",  # macOS
+                    "/usr/bin/google-chrome",  # Linux Google Chrome
+                    "/usr/bin/google-chrome-stable",  # Linux Google Chrome (stable)
+                    "/usr/bin/chromium-browser",  # Linux Chromium
+                    "/usr/bin/chromium",  # Linux Chromium (alternative)
+                    "/snap/bin/chromium",  # Snap Chromium
+                    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",  # Windows
+                    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",  # Windows x86
+                ]
+                
+                chrome_path = None
+                for path in chrome_paths:
+                    if os.path.exists(path):
+                        chrome_path = path
+                        break
+                
+                if chrome_path:
+                    self.browser = await self.playwright.chromium.launch(
+                        executable_path=chrome_path,
+                        headless=True,
+                        args=browser_args
+                    )
+                    logger.info("system_chrome_used", path=chrome_path)
+                    return self
+                else:
+                    logger.warning("system_chrome_not_found", message="System Chrome not found, falling back to Playwright Chrome")
+            except Exception as e:
+                logger.warning("system_chrome_failed", error=str(e), message="Failed to use system Chrome, falling back")
+        
+        # Default: Use Playwright's Chrome
         self.browser = await self.playwright.chromium.launch(
             headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-web-security",
-                "--disable-features=VizDisplayCompositor"
-            ]
+            args=browser_args
         )
         return self
     

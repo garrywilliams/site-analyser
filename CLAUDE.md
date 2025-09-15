@@ -13,8 +13,22 @@ Site Analyser is a comprehensive batch processing pipeline for automated website
 # Install dependencies
 uv sync --dev
 
-# Install Playwright browsers
+# Install Playwright browsers (standard)
 uv run playwright install chromium
+
+# For corporate environments with certificate issues:
+NODE_TLS_REJECT_UNAUTHORIZED=0 uv run playwright install chromium
+
+# For Linux systems missing dependencies:
+uv run playwright install-deps chromium
+NODE_TLS_REJECT_UNAUTHORIZED=0 uv run playwright install chromium
+
+# Alternative: Use install scripts
+./install-playwright-corporate.sh      # Corporate networks
+./install-linux-dependencies.sh       # Linux missing libraries
+
+# Or use system Chrome browser (no download required)
+export USE_SYSTEM_CHROME=true
 
 # Run the application
 uv run site-analyser --urls https://example.com --ai-provider openai
@@ -104,6 +118,8 @@ Optional:
 - `AI_PROVIDER`: Choose between "openai" or "anthropic"
 - `AI_MODEL`: Specify AI model to use
 - `OPENAI_BASE_URL`: Custom base URL for OpenAI-compatible APIs (e.g., local proxy or alternative service)
+- `USE_SYSTEM_CHROME`: Set to 'true' to use system Chrome instead of downloading Playwright browsers (useful for corporate environments)
+- `NODE_TLS_REJECT_UNAUTHORIZED`: Set to '0' for corporate environments with self-signed certificates
 
 ## Testing
 
