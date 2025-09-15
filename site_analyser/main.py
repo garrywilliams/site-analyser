@@ -198,8 +198,13 @@ def analyze(
     default='txt',
     help='Output format for scraped URLs'
 )
+@click.option(
+    '--minimal',
+    is_flag=True,
+    help='Output only URLs, one per line (no comments or metadata)'
+)
 @click.pass_context
-def scrape_urls(ctx, source_url: str, output_file: Path, format: str):
+def scrape_urls(ctx, source_url: str, output_file: Path, format: str, minimal: bool):
     """Scrape vendor URLs from HMRC Making Tax Digital software list."""
     debug = ctx.obj.get('debug', False)
     
@@ -216,34 +221,61 @@ def scrape_urls(ctx, source_url: str, output_file: Path, format: str):
         click.echo(f"Found {len(entries)} software entries")
         
         if format == 'txt':
-            # Save as text file with URLs only
             unique_urls = scraper.get_unique_domains(entries)
-            scraper.save_urls_to_file(entries, output_file)
             
-            click.echo(f"✅ Saved {len(entries)} entries ({len(unique_urls)} unique domains) to {output_file}")
+            if minimal:
+                # Save only URLs, one per line
+                scraper.save_urls_minimal(entries, output_file)
+                click.echo(f"✅ Saved {len(unique_urls)} unique URLs to {output_file}")
+            else:
+                # Save as text file with comments and metadata
+                scraper.save_urls_to_file(entries, output_file)
+                click.echo(f"✅ Saved {len(entries)} entries ({len(unique_urls)} unique domains) to {output_file}")
             
         elif format == 'json':
-            # Save as JSON with full details
-            import json
             json_output_file = output_file.with_suffix('.json')
+            unique_urls = scraper.get_unique_domains(entries)
             
-            with open(json_output_file, 'w') as f:
-                json.dump({
-                    'source_url': source_url,
-                    'scraped_at': datetime.now(timezone.utc).isoformat(),
-                    'total_entries': len(entries),
-                    'entries': entries
-                }, f, indent=2)
+            if minimal:
+                # Save minimal JSON with just URLs
+                import json
+                with open(json_output_file, 'w') as f:
+                    json.dump({
+                        'source_url': source_url,
+                        'scraped_at': datetime.now(timezone.utc).isoformat(),
+                        'total_unique_urls': len(unique_urls),
+                        'urls': unique_urls
+                    }, f, indent=2)
+                click.echo(f"✅ Saved {len(unique_urls)} unique URLs to {json_output_file}")
+            else:
+                # Save as JSON with full details
+                import json
+                with open(json_output_file, 'w') as f:
+                    json.dump({
+                        'source_url': source_url,
+                        'scraped_at': datetime.now(timezone.utc).isoformat(),
+                        'total_entries': len(entries),
+                        'entries': entries
+                    }, f, indent=2)
+                click.echo(f"✅ Saved detailed data to {json_output_file}")
+        
+        # Show some examples (skip if minimal mode)
+        if not minimal:
+            click.echo("\n📋 First few entries:")
+            for entry in entries[:5]:
+                click.echo(f"  • {entry['company_name']} - {entry['website_url']}")
             
-            click.echo(f"✅ Saved detailed data to {json_output_file}")
-        
-        # Show some examples
-        click.echo("\n📋 First few entries:")
-        for entry in entries[:5]:
-            click.echo(f"  • {entry['company_name']} - {entry['website_url']}")
-        
-        if len(entries) > 5:
-            click.echo(f"  ... and {len(entries) - 5} more")
+            if len(entries) > 5:
+                click.echo(f"  ... and {len(entries) - 5} more")
+        else:
+            # Show just first few URLs in minimal mode
+            unique_urls = scraper.get_unique_domains(entries)
+            click.echo(f"\n📋 First few URLs:")
+            for url in unique_urls[:5]:
+                click.echo(f"  • {url}")
+            
+            if len(unique_urls) > 5:
+                click.echo(f"  ... and {len(unique_urls) - 5} more")
     
     asyncio.run(scrape())
 

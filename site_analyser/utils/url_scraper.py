@@ -209,6 +209,24 @@ class HMRCSoftwareListScraper:
         
         logger.info("urls_saved_to_file", file=str(output_file), count=len(entries))
     
+    def save_urls_minimal(self, entries: List[Dict[str, str]], output_file: Path, unique_only: bool = True) -> None:
+        """Save URLs to file in minimal format - just URLs, one per line."""
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        if unique_only:
+            # Get unique domains
+            unique_urls = self.get_unique_domains(entries)
+            urls_to_save = unique_urls
+        else:
+            # Save all URLs (may have duplicates)
+            urls_to_save = [entry['website_url'] for entry in entries if entry.get('website_url')]
+        
+        with open(output_file, 'w') as f:
+            for url in urls_to_save:
+                f.write(f"{url}\n")
+        
+        logger.info("urls_saved_minimal", file=str(output_file), count=len(urls_to_save), unique_only=unique_only)
+    
     def get_unique_domains(self, entries: List[Dict[str, str]]) -> List[str]:
         """Extract unique domains from the scraped URLs."""
         domains = set()
