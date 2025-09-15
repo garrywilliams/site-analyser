@@ -541,8 +541,12 @@ def screenshot(
                         if result.screenshot_path:
                             click.echo(f"📸 Screenshot saved: {result.screenshot_path}")
                             click.echo(f"📍 Full path: {result.screenshot_path.absolute()}")
+                            if result.final_url and result.final_url != url:
+                                click.echo(f"🔀 Redirect: {url} → {result.final_url}")
                         else:
                             click.echo(f"❌ No screenshot path set for: {url}")
+                            if result.final_url and result.final_url != url:
+                                click.echo(f"🔀 Redirect detected: {url} → {result.final_url}")
                         
                         return result
                         
@@ -559,6 +563,7 @@ def screenshot(
         # Process results and show summary
         successful = 0
         failed = 0
+        redirected = 0
         
         for i, result in enumerate(results):
             url = url_list[i]
@@ -566,22 +571,52 @@ def screenshot(
                 click.echo(f"❌ {url}: {result}")
                 failed += 1
             elif result.site_loads and result.screenshot_path:
-                click.echo(f"✅ {url}: {result.screenshot_path.name}")
+                redirect_info = ""
+                if result.final_url and result.final_url != url:
+                    redirect_info = f" (redirected to {result.final_url})"
+                    redirected += 1
+                click.echo(f"✅ {url}: {result.screenshot_path.name}{redirect_info}")
                 successful += 1
             else:
-                click.echo(f"⚠️  {url}: {result.error_message or 'Screenshot failed'}")
+                redirect_info = ""
+                if result.final_url and result.final_url != url:
+                    redirect_info = f" (redirected to {result.final_url})"
+                    redirected += 1
+                click.echo(f"⚠️  {url}: {result.error_message or 'Screenshot failed'}{redirect_info}")
                 failed += 1
         
-        # Save results summary
+        # Save results summary with redirect details
+        results_details = []
+        for i, result in enumerate(results):
+            url = url_list[i]
+            if isinstance(result, Exception):
+                results_details.append({
+                    "original_url": url,
+                    "status": "failed",
+                    "error": str(result)
+                })
+            else:
+                results_details.append({
+                    "original_url": url,
+                    "final_url": result.final_url if hasattr(result, 'final_url') and result.final_url else url,
+                    "redirected": bool(hasattr(result, 'final_url') and result.final_url and result.final_url != url),
+                    "status": "success" if (result.site_loads and result.screenshot_path) else "failed",
+                    "screenshot_file": result.screenshot_path.name if (hasattr(result, 'screenshot_path') and result.screenshot_path) else None,
+                    "load_time_ms": getattr(result, 'load_time_ms', None),
+                    "error_message": getattr(result, 'error_message', None)
+                })
+        
         summary = {
             "timestamp": datetime.now().isoformat(),
             "total_urls": len(url_list),
             "successful": successful,
             "failed": failed,
+            "redirected": redirected,
             "urls": url_list,
             "output_directory": str(output_dir),
             "viewport": f"{viewport_width}x{viewport_height}",
-            "timeout_seconds": timeout
+            "timeout_seconds": timeout,
+            "results": results_details
         }
         
         import json
@@ -592,6 +627,8 @@ def screenshot(
         click.echo(f"\n📊 Screenshot capture completed!")
         click.echo(f"✅ Successful: {successful}")
         click.echo(f"❌ Failed: {failed}")
+        if redirected > 0:
+            click.echo(f"🔀 Redirected: {redirected}")
         click.echo(f"📁 Screenshots saved to: {output_dir}")
     
     asyncio.run(capture_screenshots())

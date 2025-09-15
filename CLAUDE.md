@@ -42,6 +42,9 @@ uv run site-analyser --urls https://example.com --ai-base-url http://localhost:8
 # Capture screenshots only (no AI analysis)
 uv run site-analyser screenshot --urls https://example.com --output-dir ./screenshots
 
+# Screenshots automatically follow redirects (HTTP → HTTPS)
+uv run site-analyser screenshot --urls http://example.com --output-dir ./screenshots --verbose
+
 # Run tests
 uv run pytest
 

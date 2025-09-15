@@ -111,6 +111,7 @@ class WebScraperProcessor(BaseProcessor):
             load_start = datetime.now()
             
             try:
+                # Navigate with automatic redirect following enabled
                 response = await page.goto(
                     url,
                     timeout=self.config.processing_config.screenshot_timeout_seconds * 1000,
@@ -119,6 +120,17 @@ class WebScraperProcessor(BaseProcessor):
                 
                 load_time = (datetime.now() - load_start).total_seconds() * 1000
                 result.load_time_ms = int(load_time)
+                
+                # Log redirect information
+                final_url = page.url
+                if final_url != url:
+                    logger.info("redirect_detected", 
+                              original_url=url, 
+                              final_url=final_url,
+                              status_code=response.status if response else None)
+                    # Update the result URL to reflect the final destination
+                    result.final_url = final_url
+                
                 result.site_loads = response is not None and response.status < 400
                 
                 if not result.site_loads:
