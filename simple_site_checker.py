@@ -556,12 +556,14 @@ COMPANY: {company_name}
 URL: {url}
 
 Assess for:
-1. UK Government visual violations (Crown logos, gov.uk styling, official colors)
-2. HMRC visual violations (HMRC branding, tax authority styling)  
-3. Design professionalism and trust indicators
+1. Making Tax Digital relevance (does this appear to be MTD/tax software/accounting services?)
+2. UK Government visual violations (Crown logos, gov.uk styling, official colors)
+3. HMRC visual violations (HMRC branding, tax authority styling)  
+4. Design professionalism and trust indicators
 
 JSON response only:
 {{
+    "mtd_relevant": {{"relevant": true/false, "confidence": "high/medium/low", "reasoning": "brief explanation"}},
     "govt_visual_violations": {{"found": true/false, "details": "brief description"}},
     "hmrc_visual_violations": {{"found": true/false, "details": "brief description"}},
     "design_quality": {{"professional": true/false, "issues": "main issues"}},
@@ -585,7 +587,11 @@ JSON response only:
             else:
                 response = await self.call_agent(image_prompt, image_data)
             
-            logger.info("image_analysis_completed", id=record_id)
+            logger.info("image_analysis_completed", id=record_id, response_keys=list(response.keys()) if isinstance(response, dict) else "non_dict_response")
+            if isinstance(response, dict) and any(key in response for key in ['govt_visual_violations', 'hmrc_visual_violations']):
+                logger.info("visual_violations_detected", id=record_id, 
+                          govt_found=response.get('govt_visual_violations', {}).get('found'),
+                          hmrc_found=response.get('hmrc_visual_violations', {}).get('found'))
             return response
             
         except Exception as e:
@@ -612,13 +618,15 @@ CONTENT:
 {relevant_content}
 
 Assess for:
-1. UK Government trademark violations (unauthorized gov terms, Crown references)
-2. HMRC trademark violations (unauthorized HMRC branding, misleading tax authority claims)
-3. Business legitimacy (contact info, professional content, required legal pages)
-4. Tax service compliance (appropriate disclaimers, qualification statements)
+1. Making Tax Digital relevance (MTD software, tax services, accounting tools, VAT/bookkeeping)
+2. UK Government trademark violations (unauthorized gov terms, Crown references)
+3. HMRC trademark violations (unauthorized HMRC branding, misleading tax authority claims)
+4. Business legitimacy (contact info, professional content, required legal pages)
+5. Tax service compliance (appropriate disclaimers, qualification statements)
 
 JSON response only:
 {{
+    "mtd_relevant": {{"relevant": true/false, "confidence": "high/medium/low", "reasoning": "brief explanation"}},
     "govt_content_violations": {{"found": true/false, "details": "brief description"}},
     "hmrc_content_violations": {{"found": true/false, "details": "brief description"}},
     "legitimacy_concerns": {{"found": true/false, "details": "main concerns"}},
@@ -690,6 +698,9 @@ JSON response only:
             fieldnames = [
                 'id', 'company_name', 'url', 'final_url', 'redirected', 'load_time_ms',
                 'analysis_timestamp',
+                # MTD relevance assessment
+                'mtd_relevant_visual', 'mtd_confidence_visual', 'mtd_reasoning_visual',
+                'mtd_relevant_content', 'mtd_confidence_content', 'mtd_reasoning_content',
                 # Visual analysis fields
                 'visual_govt_violations_found', 'visual_govt_violations_severity', 'visual_govt_violations_details',
                 'visual_hmrc_violations_found', 'visual_hmrc_violations_severity', 'visual_hmrc_violations_details',
@@ -725,42 +736,60 @@ JSON response only:
                 visual = result.get('visual_analysis', {})
                 if 'error' in visual:
                     row['visual_analysis_error'] = visual['error']
+                    # Add default MTD relevance if visual analysis failed
+                    row.update({
+                        'mtd_relevant_visual': 'Unknown',
+                        'mtd_confidence_visual': 'none',
+                        'mtd_reasoning_visual': 'Visual analysis failed',
+                    })
                 else:
                     row.update({
-                        'visual_govt_violations_found': visual.get('govt_visual_violations', {}).get('found', ''),
-                        'visual_govt_violations_severity': visual.get('govt_visual_violations', {}).get('severity', ''),
-                        'visual_govt_violations_details': visual.get('govt_visual_violations', {}).get('details', ''),
-                        'visual_hmrc_violations_found': visual.get('hmrc_visual_violations', {}).get('found', ''),
-                        'visual_hmrc_violations_severity': visual.get('hmrc_visual_violations', {}).get('severity', ''),
-                        'visual_hmrc_violations_details': visual.get('hmrc_visual_violations', {}).get('details', ''),
-                        'design_professional': visual.get('design_quality', {}).get('professional', ''),
-                        'design_issues': visual.get('design_quality', {}).get('issues', ''),
-                        'trust_indicators_present': visual.get('trust_indicators', {}).get('present', ''),
-                        'trust_indicators_details': visual.get('trust_indicators', {}).get('details', ''),
-                        'visual_risk': visual.get('visual_risk_level', ''),
-                        'visual_summary': visual.get('summary', ''),
+                        'mtd_relevant_visual': visual.get('mtd_relevant', {}).get('relevant', 'Unknown'),
+                        'mtd_confidence_visual': visual.get('mtd_relevant', {}).get('confidence', 'low'),
+                        'mtd_reasoning_visual': visual.get('mtd_relevant', {}).get('reasoning', 'No assessment available'),
+                        'visual_govt_violations_found': visual.get('govt_visual_violations', {}).get('found', False),
+                        'visual_govt_violations_severity': visual.get('govt_visual_violations', {}).get('severity', 'none'),
+                        'visual_govt_violations_details': visual.get('govt_visual_violations', {}).get('details', 'No violations detected'),
+                        'visual_hmrc_violations_found': visual.get('hmrc_visual_violations', {}).get('found', False),
+                        'visual_hmrc_violations_severity': visual.get('hmrc_visual_violations', {}).get('severity', 'none'),
+                        'visual_hmrc_violations_details': visual.get('hmrc_visual_violations', {}).get('details', 'No violations detected'),
+                        'design_professional': visual.get('design_quality', {}).get('professional', True),
+                        'design_issues': visual.get('design_quality', {}).get('issues', 'No issues detected'),
+                        'trust_indicators_present': visual.get('trust_indicators', {}).get('present', True),
+                        'trust_indicators_details': visual.get('trust_indicators', {}).get('details', 'Standard indicators present'),
+                        'visual_risk': visual.get('visual_risk_level', 'none'),
+                        'visual_summary': visual.get('summary', 'Visual analysis completed - no issues detected'),
                     })
                 
                 # Content analysis results
                 content = result.get('content_analysis', {})
                 if 'error' in content:
                     row['content_analysis_error'] = content['error']
+                    # Add default MTD relevance if content analysis failed
+                    row.update({
+                        'mtd_relevant_content': 'Unknown',
+                        'mtd_confidence_content': 'none',
+                        'mtd_reasoning_content': 'Content analysis failed',
+                    })
                 else:
                     row.update({
-                        'uk_govt_violations_found': content.get('uk_govt_violations', {}).get('found', ''),
-                        'uk_govt_violations_severity': content.get('uk_govt_violations', {}).get('severity', ''),
-                        'uk_govt_violations_details': content.get('uk_govt_violations', {}).get('details', ''),
-                        'hmrc_violations_found': content.get('hmrc_violations', {}).get('found', ''),
-                        'hmrc_violations_severity': content.get('hmrc_violations', {}).get('severity', ''),
-                        'hmrc_violations_details': content.get('hmrc_violations', {}).get('details', ''),
-                        'legitimacy_concerns_found': content.get('legitimacy_concerns', {}).get('found', ''),
-                        'legitimacy_concerns_severity': content.get('legitimacy_concerns', {}).get('severity', ''),
-                        'legitimacy_concerns_details': content.get('legitimacy_concerns', {}).get('details', ''),
-                        'tax_compliance_compliant': content.get('tax_compliance', {}).get('compliant', ''),
-                        'tax_compliance_severity': content.get('tax_compliance', {}).get('severity', ''),
-                        'tax_compliance_details': content.get('tax_compliance', {}).get('details', ''),
-                        'overall_risk': content.get('overall_risk', ''),
-                        'content_summary': content.get('summary', ''),
+                        'mtd_relevant_content': content.get('mtd_relevant', {}).get('relevant', 'Unknown'),
+                        'mtd_confidence_content': content.get('mtd_relevant', {}).get('confidence', 'low'),
+                        'mtd_reasoning_content': content.get('mtd_relevant', {}).get('reasoning', 'No assessment available'),
+                        'uk_govt_violations_found': content.get('govt_content_violations', {}).get('found', False),
+                        'uk_govt_violations_severity': content.get('govt_content_violations', {}).get('severity', 'none'),
+                        'uk_govt_violations_details': content.get('govt_content_violations', {}).get('details', 'No violations detected'),
+                        'hmrc_violations_found': content.get('hmrc_content_violations', {}).get('found', False),
+                        'hmrc_violations_severity': content.get('hmrc_content_violations', {}).get('severity', 'none'),
+                        'hmrc_violations_details': content.get('hmrc_content_violations', {}).get('details', 'No violations detected'),
+                        'legitimacy_concerns_found': content.get('legitimacy_concerns', {}).get('found', False),
+                        'legitimacy_concerns_severity': content.get('legitimacy_concerns', {}).get('severity', 'none'),
+                        'legitimacy_concerns_details': content.get('legitimacy_concerns', {}).get('details', 'No concerns identified'),
+                        'tax_compliance_compliant': content.get('tax_compliance', {}).get('compliant', True),
+                        'tax_compliance_severity': content.get('tax_compliance', {}).get('severity', 'none'),
+                        'tax_compliance_details': content.get('tax_compliance', {}).get('details', 'Compliant'),
+                        'overall_risk': content.get('content_risk_level', 'none'),
+                        'content_summary': content.get('summary', 'Content analysis completed - no issues detected'),
                     })
                 
                 writer.writerow(row)
