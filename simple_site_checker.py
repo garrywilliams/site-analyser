@@ -727,18 +727,18 @@ JSON response only:
                     row['visual_analysis_error'] = visual['error']
                 else:
                     row.update({
-                        'visual_govt_violations_found': visual.get('visual_govt_violations', {}).get('found', ''),
-                        'visual_govt_violations_severity': visual.get('visual_govt_violations', {}).get('severity', ''),
-                        'visual_govt_violations_details': visual.get('visual_govt_violations', {}).get('details', ''),
-                        'visual_hmrc_violations_found': visual.get('visual_hmrc_violations', {}).get('found', ''),
-                        'visual_hmrc_violations_severity': visual.get('visual_hmrc_violations', {}).get('severity', ''),
-                        'visual_hmrc_violations_details': visual.get('visual_hmrc_violations', {}).get('details', ''),
+                        'visual_govt_violations_found': visual.get('govt_visual_violations', {}).get('found', ''),
+                        'visual_govt_violations_severity': visual.get('govt_visual_violations', {}).get('severity', ''),
+                        'visual_govt_violations_details': visual.get('govt_visual_violations', {}).get('details', ''),
+                        'visual_hmrc_violations_found': visual.get('hmrc_visual_violations', {}).get('found', ''),
+                        'visual_hmrc_violations_severity': visual.get('hmrc_visual_violations', {}).get('severity', ''),
+                        'visual_hmrc_violations_details': visual.get('hmrc_visual_violations', {}).get('details', ''),
                         'design_professional': visual.get('design_quality', {}).get('professional', ''),
                         'design_issues': visual.get('design_quality', {}).get('issues', ''),
                         'trust_indicators_present': visual.get('trust_indicators', {}).get('present', ''),
                         'trust_indicators_details': visual.get('trust_indicators', {}).get('details', ''),
-                        'visual_risk': visual.get('visual_risk', ''),
-                        'visual_summary': visual.get('visual_summary', ''),
+                        'visual_risk': visual.get('visual_risk_level', ''),
+                        'visual_summary': visual.get('summary', ''),
                     })
                 
                 # Content analysis results
