@@ -81,10 +81,114 @@ class SimpleSiteChecker:
         image_b64 = base64.b64encode(image_data).decode('utf-8')
         return f"data:image/png;base64,{image_b64}"
     
+    def estimate_token_count(self, text: str) -> int:
+        """Rough estimate of token count (4 chars ≈ 1 token)."""
+        return len(text) // 4
+    
+    def should_split_analysis(self, prompt: str, has_image: bool = False) -> bool:
+        """Determine if analysis should be split due to context limits."""
+        # Rough estimates:
+        # - Base prompt: ~500-1000 tokens
+        # - Image: ~1000-2000 tokens (depending on size/detail)
+        # - HTML content: variable
+        # - Safety margin: 20% of 128k = ~25k tokens
+        
+        estimated_tokens = self.estimate_token_count(prompt)
+        if has_image:
+            estimated_tokens += 1500  # Image overhead
+        
+        max_safe_tokens = 100000  # Leave 28k tokens for response
+        
+        return estimated_tokens > max_safe_tokens
+    
+    def extract_relevant_html_content(self, html_content: str) -> str:
+        """Extract only relevant parts of HTML for analysis."""
+        from bs4 import BeautifulSoup
+        
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # Extract key elements for compliance analysis
+            relevant_content = []
+            
+            # 1. Title and meta
+            if soup.title:
+                relevant_content.append(f"TITLE: {soup.title.get_text().strip()}")
+            
+            # 2. Meta descriptions
+            meta_desc = soup.find('meta', attrs={'name': 'description'})
+            if meta_desc:
+                relevant_content.append(f"META_DESCRIPTION: {meta_desc.get('content', '').strip()}")
+            
+            # 3. Main headings (h1, h2, h3)
+            headings = []
+            for tag in ['h1', 'h2', 'h3']:
+                for element in soup.find_all(tag):
+                    text = element.get_text().strip()
+                    if text and len(text) < 200:  # Avoid overly long headings
+                        headings.append(f"{tag.upper()}: {text}")
+            
+            if headings:
+                relevant_content.append("HEADINGS:")
+                relevant_content.extend(headings[:10])  # Max 10 headings
+            
+            # 4. Navigation and menu items (potential gov/HMRC terminology)
+            nav_items = []
+            for nav in soup.find_all(['nav', 'menu']):
+                for link in nav.find_all('a'):
+                    text = link.get_text().strip()
+                    if text and len(text) < 100:
+                        nav_items.append(text)
+            
+            if nav_items:
+                relevant_content.append("NAVIGATION:")
+                relevant_content.extend(nav_items[:15])  # Max 15 nav items
+            
+            # 5. Footer content (often contains company/legal info)
+            footer = soup.find('footer')
+            if footer:
+                footer_text = footer.get_text().strip()
+                if footer_text:
+                    relevant_content.append(f"FOOTER: {footer_text[:1000]}")  # First 1000 chars
+            
+            # 6. Look for specific compliance-related terms
+            compliance_keywords = [
+                'privacy policy', 'terms of service', 'cookie policy', 'gdpr',
+                'hmrc', 'tax', 'vat', 'government', 'crown', 'official',
+                'contact', 'about', 'disclaimer', 'legal'
+            ]
+            
+            compliance_content = []
+            for keyword in compliance_keywords:
+                # Find elements containing these keywords
+                elements = soup.find_all(text=lambda text: text and keyword.lower() in text.lower())
+                for element in elements[:3]:  # Max 3 per keyword
+                    parent_text = element.parent.get_text().strip() if element.parent else str(element).strip()
+                    if len(parent_text) < 500:  # Reasonable length
+                        compliance_content.append(parent_text)
+            
+            if compliance_content:
+                relevant_content.append("COMPLIANCE_CONTENT:")
+                relevant_content.extend(list(set(compliance_content))[:10])  # Dedupe and limit
+            
+            # Join all content
+            extracted_content = "\n".join(relevant_content)
+            
+            # Final length check - aim for ~4000 chars max
+            if len(extracted_content) > 4000:
+                extracted_content = extracted_content[:4000] + "... [TRUNCATED]"
+            
+            return extracted_content
+            
+        except Exception as e:
+            logger.warning("html_extraction_failed", error=str(e))
+            # Fallback to simple truncation
+            return html_content[:3000] + "... [EXTRACTION_FAILED]"
+    
     def create_compliance_prompt(self, company_name: str, url: str, html_content: str) -> str:
         """Create a comprehensive compliance assessment prompt."""
-        # Truncate HTML if too long (keep first 8000 chars for context)
-        html_snippet = html_content[:8000] + "..." if len(html_content) > 8000 else html_content
+        # Extract only relevant HTML content
+        html_snippet = self.extract_relevant_html_content(html_content)
         
         prompt = f"""
 Analyze this website for UK Government and HMRC trademark compliance and general business legitimacy issues.
@@ -206,6 +310,33 @@ Respond ONLY with valid JSON - no other text.
 """
         return prompt
     
+    def create_short_visual_prompt(self, company_name: str, url: str) -> str:
+        """Create a shorter visual analysis prompt for context-limited scenarios."""
+        prompt = f"""
+Analyze this website screenshot for trademark violations and design quality.
+
+COMPANY: {company_name}
+URL: {url}
+
+Assess for:
+1. Government/HMRC visual violations (logos, branding, color schemes)
+2. Overall design quality and professionalism
+3. Trust indicators and legitimacy concerns
+
+JSON format:
+{{
+    "visual_govt_violations": {{"found": true/false, "severity": "none/low/medium/high", "details": "brief details"}},
+    "visual_hmrc_violations": {{"found": true/false, "severity": "none/low/medium/high", "details": "brief details"}},
+    "design_quality": {{"professional": true/false, "issues": "main issues or none"}},
+    "trust_indicators": {{"present": true/false, "details": "key indicators"}},
+    "visual_risk": "none/low/medium/high",
+    "visual_summary": "One sentence summary"
+}}
+
+Respond ONLY with valid JSON.
+"""
+        return prompt
+    
     async def call_agent(self, prompt: str, image_data: Optional[bytes] = None) -> Dict:
         """Call Agno agent with prompt and optional image."""
         try:
@@ -262,7 +393,16 @@ Respond ONLY with valid JSON - no other text.
         if record['screenshot_image']:
             try:
                 visual_prompt = self.create_visual_analysis_prompt(company_name, url)
-                visual_response = await self.call_agent(visual_prompt, record['screenshot_image'])
+                
+                # Check if we need to do image-only analysis
+                if self.should_split_analysis(visual_prompt, has_image=True):
+                    logger.info("using_image_only_analysis", id=record_id, reason="context_too_large")
+                    # Use a shorter prompt for image analysis
+                    short_visual_prompt = self.create_short_visual_prompt(company_name, url)
+                    visual_response = await self.call_agent(short_visual_prompt, record['screenshot_image'])
+                else:
+                    visual_response = await self.call_agent(visual_prompt, record['screenshot_image'])
+                
                 visual_results = visual_response
                 logger.info("visual_analysis_completed", id=record_id)
             except Exception as e:
@@ -274,6 +414,14 @@ Respond ONLY with valid JSON - no other text.
         if record['html_content']:
             try:
                 content_prompt = self.create_compliance_prompt(company_name, url, record['html_content'])
+                
+                # Check token count and adjust if needed
+                if self.should_split_analysis(content_prompt):
+                    logger.info("using_minimal_content_analysis", id=record_id, reason="context_too_large")
+                    # Use shorter extracted content
+                    shorter_content = self.extract_relevant_html_content(record['html_content'])[:2000]
+                    content_prompt = self.create_compliance_prompt(company_name, url, shorter_content)
+                
                 content_response = await self.call_agent(content_prompt)
                 content_results = content_response
                 logger.info("content_analysis_completed", id=record_id)
