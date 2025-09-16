@@ -109,7 +109,7 @@ class SimpleSiteChecker:
         
         return estimated_tokens > max_safe_tokens
     
-    def resize_image_if_needed(self, image_data: bytes, max_dimension: int = 1024) -> bytes:
+    def resize_image_if_needed(self, image_data: bytes, max_dimension: int = 768, quality: int = 85) -> bytes:
         """Resize image if it's too large to reduce token usage."""
         try:
             from PIL import Image
@@ -133,9 +133,19 @@ class SimpleSiteChecker:
             # Resize image
             resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
             
-            # Save to bytes
+            # Save to bytes with aggressive compression
             output_buffer = io.BytesIO()
-            resized_img.save(output_buffer, format='PNG', optimize=True)
+            
+            # Try JPEG first for better compression (if not transparent)
+            if resized_img.mode in ('RGBA', 'LA'):
+                # Has transparency, stick with PNG but compress aggressively  
+                resized_img.save(output_buffer, format='PNG', optimize=True, compress_level=9)
+            else:
+                # No transparency, use JPEG for much better compression
+                if resized_img.mode != 'RGB':
+                    resized_img = resized_img.convert('RGB')
+                resized_img.save(output_buffer, format='JPEG', quality=quality, optimize=True)
+            
             resized_data = output_buffer.getvalue()
             
             original_size = len(image_data)
@@ -153,6 +163,62 @@ class SimpleSiteChecker:
         except Exception as e:
             logger.warning("image_resize_failed", error=str(e))
             return image_data  # Return original if resize fails
+    
+    def compress_image_aggressively(self, image_data: bytes, target_tokens: int = 50000) -> bytes:
+        """Compress image more aggressively to fit token limits."""
+        try:
+            from PIL import Image
+            import io
+            
+            img = Image.open(io.BytesIO(image_data))
+            
+            # Start with smaller dimensions and lower quality
+            max_dim = 512
+            quality = 60
+            
+            while max_dim >= 256:  # Don't go below 256px
+                # Resize
+                if max(img.width, img.height) > max_dim:
+                    if img.width > img.height:
+                        new_width = max_dim
+                        new_height = int((max_dim * img.height) / img.width)
+                    else:
+                        new_height = max_dim
+                        new_width = int((max_dim * img.width) / img.height)
+                    resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                else:
+                    resized_img = img
+                
+                # Compress
+                output_buffer = io.BytesIO()
+                if resized_img.mode != 'RGB':
+                    resized_img = resized_img.convert('RGB')
+                resized_img.save(output_buffer, format='JPEG', quality=quality, optimize=True)
+                compressed_data = output_buffer.getvalue()
+                
+                # Check if it fits our token budget
+                estimated_tokens = self.estimate_image_tokens(compressed_data)
+                if estimated_tokens <= target_tokens:
+                    logger.info("aggressive_compression_success", 
+                               original_tokens=self.estimate_image_tokens(image_data),
+                               final_tokens=estimated_tokens,
+                               dimensions=f"{new_width if 'new_width' in locals() else img.width}x{new_height if 'new_height' in locals() else img.height}",
+                               quality=quality)
+                    return compressed_data
+                
+                # Try smaller dimensions and lower quality
+                max_dim = int(max_dim * 0.8)
+                quality = max(30, quality - 10)
+            
+            # If we still can't fit, return the most compressed version we tried
+            logger.warning("aggressive_compression_insufficient", 
+                          final_tokens=self.estimate_image_tokens(compressed_data),
+                          target_tokens=target_tokens)
+            return compressed_data
+            
+        except Exception as e:
+            logger.warning("aggressive_compression_failed", error=str(e))
+            return image_data
     
     def extract_relevant_html_content(self, html_content: str) -> str:
         """Extract only relevant parts of HTML for analysis."""
@@ -445,8 +511,8 @@ Respond ONLY with valid JSON.
         visual_results = {}
         if record['screenshot_image']:
             try:
-                # First, resize image if it's too large
-                image_data = self.resize_image_if_needed(record['screenshot_image'], max_dimension=1024)
+                # First, resize image aggressively if it's too large  
+                image_data = self.resize_image_if_needed(record['screenshot_image'], max_dimension=768, quality=75)
                 
                 visual_prompt = self.create_visual_analysis_prompt(company_name, url)
                 
@@ -456,7 +522,7 @@ Respond ONLY with valid JSON.
                     # Use a much shorter prompt
                     short_visual_prompt = self.create_short_visual_prompt(company_name, url)
                     
-                    # If still too large, either skip image or use text-only analysis
+                    # If still too large, try aggressive compression
                     if self.should_split_analysis(short_visual_prompt, image_data):
                         if self.skip_large_images:
                             logger.warning("skipping_large_image", id=record_id, 
@@ -466,14 +532,30 @@ Respond ONLY with valid JSON.
                                 "reason": "Image too large for context window",
                                 "image_tokens": self.estimate_image_tokens(image_data)
                             }
-                            # Continue to next analysis
                         else:
-                            logger.warning("using_minimal_image_prompt", id=record_id, 
-                                         image_tokens=self.estimate_image_tokens(image_data))
-                            # Use the absolute minimal prompt
+                            logger.info("attempting_aggressive_compression", id=record_id)
+                            # Try to compress image to fit in ~50k tokens
+                            compressed_image = self.compress_image_aggressively(image_data, target_tokens=50000)
+                            
+                            # Try with compressed image and minimal prompt
                             minimal_prompt = f"Analyze this website screenshot for government trademark violations and design quality issues. Company: {company_name}. Respond with brief JSON assessment."
-                            visual_response = await self.call_agent(minimal_prompt, image_data)
-                            visual_results = visual_response
+                            
+                            if self.should_split_analysis(minimal_prompt, compressed_image):
+                                logger.error("image_still_too_large_after_compression", 
+                                           id=record_id, 
+                                           final_tokens=self.estimate_image_tokens(compressed_image))
+                                visual_results = {
+                                    "error": "Image too large even after aggressive compression",
+                                    "final_tokens": self.estimate_image_tokens(compressed_image)
+                                }
+                            else:
+                                logger.info("submitting_to_model", 
+                                          id=record_id,
+                                          estimated_total_tokens=self.estimate_token_count(minimal_prompt) + self.estimate_image_tokens(compressed_image),
+                                          prompt_tokens=self.estimate_token_count(minimal_prompt),
+                                          image_tokens=self.estimate_image_tokens(compressed_image))
+                                visual_response = await self.call_agent(minimal_prompt, compressed_image)
+                                visual_results = visual_response
                     else:
                         visual_response = await self.call_agent(short_visual_prompt, image_data)
                         visual_results = visual_response
