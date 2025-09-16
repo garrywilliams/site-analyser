@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Tuple
 import asyncpg
 import structlog
 from dotenv import load_dotenv
-from agno import Agent
+from agno.agent import Agent
 from agno.models.openai import OpenAILike
 
 # Load environment variables
@@ -30,11 +30,11 @@ class SimpleSiteChecker:
     
     def __init__(self, model_id: str = "gpt-4o-mini", api_key: str = "", base_url: str = "", skip_large_images: bool = False):
         self.db_config = {
-            'host': os.getenv('DB_HOST', 'localhost'),
-            'port': int(os.getenv('DB_PORT', '5432')),
-            'database': os.getenv('DB_NAME', 'site_analysis'),
-            'user': os.getenv('DB_USER', 'postgres'),
-            'password': os.getenv('DB_PASSWORD', ''),
+            'host': os.getenv('POSTGRES_HOST', 'localhost'),
+            'port': int(os.getenv('POSTGRES_PORT', '5432')),
+            'database': os.getenv('POSTGRES_NAME', 'mtdsource'),
+            'user': os.getenv('POSTGRES_USER', 'mtdsource'),
+            'password': os.getenv('POSTGRES_PASSWORD', ''),
         }
         
         # Initialize Agno model and agent
