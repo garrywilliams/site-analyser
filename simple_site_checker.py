@@ -17,6 +17,8 @@ from typing import Dict, List, Optional, Tuple
 import asyncpg
 import structlog
 from dotenv import load_dotenv
+from agno import Agent
+from agno.models.openai import OpenAILike
 
 # Load environment variables
 load_dotenv()
@@ -26,7 +28,7 @@ logger = structlog.get_logger()
 class SimpleSiteChecker:
     """Simplified site compliance checker using Agno agents."""
     
-    def __init__(self):
+    def __init__(self, model_id: str = "gpt-4o-mini", api_key: str = "", base_url: str = ""):
         self.db_config = {
             'host': os.getenv('DB_HOST', 'localhost'),
             'port': int(os.getenv('DB_PORT', '5432')),
@@ -35,12 +37,19 @@ class SimpleSiteChecker:
             'password': os.getenv('DB_PASSWORD', ''),
         }
         
-        # AI configuration
-        self.ai_provider = os.getenv('AI_PROVIDER', 'openai')
-        self.ai_api_key = os.getenv('OPENAI_API_KEY') or os.getenv('ANTHROPIC_API_KEY')
+        # Initialize Agno model and agent
+        if not api_key or not base_url:
+            raise ValueError("Both api_key and base_url are required for OpenAILike model")
         
-        if not self.ai_api_key:
-            raise ValueError("Missing AI API key. Set OPENAI_API_KEY or ANTHROPIC_API_KEY in .env")
+        self.model = OpenAILike(
+            id=model_id,
+            api_key=api_key,
+            base_url=base_url
+        )
+        
+        self.agent = Agent(model=self.model)
+        
+        logger.info("agent_initialized", model_id=model_id, base_url=base_url)
     
     async def get_active_records(self, limit: Optional[int] = None) -> List[Dict]:
         """Fetch active records from database."""
@@ -67,9 +76,10 @@ class SimpleSiteChecker:
         finally:
             await conn.close()
     
-    def encode_image_for_ai(self, image_data: bytes) -> str:
-        """Encode image data as base64 for AI APIs."""
-        return base64.b64encode(image_data).decode('utf-8')
+    def create_image_message(self, image_data: bytes) -> str:
+        """Create data URL for image to be used with Agno agent."""
+        image_b64 = base64.b64encode(image_data).decode('utf-8')
+        return f"data:image/png;base64,{image_b64}"
     
     def create_compliance_prompt(self, company_name: str, url: str, html_content: str) -> str:
         """Create a comprehensive compliance assessment prompt."""
@@ -196,92 +206,38 @@ Respond ONLY with valid JSON - no other text.
 """
         return prompt
     
-    async def call_ai_api(self, prompt: str, image_data: Optional[bytes] = None) -> Dict:
-        """Call AI API with prompt and optional image."""
+    async def call_agent(self, prompt: str, image_data: Optional[bytes] = None) -> Dict:
+        """Call Agno agent with prompt and optional image."""
         try:
-            if self.ai_provider == 'openai':
-                return await self._call_openai(prompt, image_data)
-            elif self.ai_provider == 'anthropic':
-                return await self._call_anthropic(prompt, image_data)
-            else:
-                raise ValueError(f"Unsupported AI provider: {self.ai_provider}")
-        except Exception as e:
-            logger.error("ai_api_call_failed", error=str(e), provider=self.ai_provider)
-            return {"error": str(e)}
-    
-    async def _call_openai(self, prompt: str, image_data: Optional[bytes] = None) -> Dict:
-        """Call OpenAI GPT-4 Vision API."""
-        import openai
-        
-        client = openai.AsyncOpenAI(
-            api_key=self.ai_api_key,
-            base_url=os.getenv('OPENAI_BASE_URL')  # Support for custom endpoints
-        )
-        
-        messages = []
-        
-        if image_data:
-            # Vision request with image
-            image_b64 = self.encode_image_for_ai(image_data)
-            messages.append({
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}}
+            if image_data:
+                # Vision request with image
+                image_url = self.create_image_message(image_data)
+                # Create message with both text and image
+                messages = [
+                    {"role": "user", "content": f"Image: {image_url}\n\n{prompt}"}
                 ]
-            })
-        else:
-            # Text-only request
-            messages.append({"role": "user", "content": prompt})
-        
-        response = await client.chat.completions.create(
-            model="gpt-4o",  # Use GPT-4o for vision + text
-            messages=messages,
-            max_tokens=1000,
-            temperature=0.1
-        )
-        
-        content = response.choices[0].message.content
-        
-        # Try to parse as JSON
-        try:
-            return json.loads(content)
-        except json.JSONDecodeError:
-            return {"raw_response": content, "parse_error": "Failed to parse JSON"}
-    
-    async def _call_anthropic(self, prompt: str, image_data: Optional[bytes] = None) -> Dict:
-        """Call Anthropic Claude Vision API."""
-        import anthropic
-        
-        client = anthropic.AsyncAnthropic(api_key=self.ai_api_key)
-        
-        content_parts = [{"type": "text", "text": prompt}]
-        
-        if image_data:
-            image_b64 = self.encode_image_for_ai(image_data)
-            content_parts.insert(0, {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/png",
-                    "data": image_b64
-                }
-            })
-        
-        response = await client.messages.create(
-            model="claude-3-5-sonnet-20241022",
-            messages=[{"role": "user", "content": content_parts}],
-            max_tokens=1000,
-            temperature=0.1
-        )
-        
-        content = response.content[0].text
-        
-        # Try to parse as JSON
-        try:
-            return json.loads(content)
-        except json.JSONDecodeError:
-            return {"raw_response": content, "parse_error": "Failed to parse JSON"}
+                
+                # Run agent with image context
+                response = await self.agent.arun(messages=messages)
+            else:
+                # Text-only request
+                response = await self.agent.arun(prompt)
+            
+            # Response should be a string, try to parse as JSON
+            if hasattr(response, 'content'):
+                content = response.content
+            else:
+                content = str(response)
+            
+            # Try to parse as JSON
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError:
+                return {"raw_response": content, "parse_error": "Failed to parse JSON"}
+                
+        except Exception as e:
+            logger.error("agent_call_failed", error=str(e))
+            return {"error": str(e)}
     
     async def analyze_record(self, record: Dict) -> Dict:
         """Analyze a single database record."""
@@ -306,7 +262,7 @@ Respond ONLY with valid JSON - no other text.
         if record['screenshot_image']:
             try:
                 visual_prompt = self.create_visual_analysis_prompt(company_name, url)
-                visual_response = await self.call_ai_api(visual_prompt, record['screenshot_image'])
+                visual_response = await self.call_agent(visual_prompt, record['screenshot_image'])
                 visual_results = visual_response
                 logger.info("visual_analysis_completed", id=record_id)
             except Exception as e:
@@ -318,7 +274,7 @@ Respond ONLY with valid JSON - no other text.
         if record['html_content']:
             try:
                 content_prompt = self.create_compliance_prompt(company_name, url, record['html_content'])
-                content_response = await self.call_ai_api(content_prompt)
+                content_response = await self.call_agent(content_prompt)
                 content_results = content_response
                 logger.info("content_analysis_completed", id=record_id)
             except Exception as e:
@@ -437,7 +393,7 @@ Respond ONLY with valid JSON - no other text.
     
     async def run_analysis(self, limit: Optional[int] = None, output_file: Optional[Path] = None, mark_completed: bool = True) -> List[Dict]:
         """Run the complete analysis workflow."""
-        logger.info("starting_site_analysis", limit=limit, ai_provider=self.ai_provider)
+        logger.info("starting_site_analysis", limit=limit, model_id=self.model.id)
         
         # Get active records
         records = await self.get_active_records(limit)
@@ -480,13 +436,14 @@ async def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='Simple Site Compliance Checker - Proof of Concept')
+    parser.add_argument('--api-key', required=True, help='API key for the OpenAI-like model')
+    parser.add_argument('--base-url', required=True, help='Base URL for the OpenAI-like model endpoint')
+    parser.add_argument('--model-id', default='gpt-4o-mini', help='Model ID to use (default: gpt-4o-mini)')
     parser.add_argument('--limit', type=int, help='Limit number of records to process')
     parser.add_argument('--output', type=Path, default=Path('./results/compliance_analysis.csv'),
                         help='Output CSV file path')
     parser.add_argument('--dry-run', action='store_true',
                         help='Run analysis without marking records as completed')
-    parser.add_argument('--ai-provider', choices=['openai', 'anthropic'],
-                        help='AI provider to use (overrides env var)')
     
     args = parser.parse_args()
     
@@ -501,12 +458,12 @@ async def main():
         cache_logger_on_first_use=True,
     )
     
-    # Override AI provider if specified
-    if args.ai_provider:
-        os.environ['AI_PROVIDER'] = args.ai_provider
-    
     try:
-        checker = SimpleSiteChecker()
+        checker = SimpleSiteChecker(
+            model_id=args.model_id,
+            api_key=args.api_key,
+            base_url=args.base_url
+        )
         
         results = await checker.run_analysis(
             limit=args.limit,
