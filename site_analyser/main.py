@@ -213,10 +213,23 @@ def analyze(
     is_flag=True,
     help='Output only URLs, one per line (no comments or metadata)'
 )
+@click.option(
+    '--job-id',
+    type=str,
+    help='Job ID (UUID) for relating this scrape to later processing. If not provided, a new UUID will be generated.'
+)
 @click.pass_context
-def scrape_urls(ctx, source_url: str, output_file: Path, format: str, minimal: bool):
+def scrape_urls(ctx, source_url: str, output_file: Path, format: str, minimal: bool, job_id: Optional[str]):
     """Scrape vendor URLs from HMRC Making Tax Digital software list."""
     debug = ctx.obj.get('debug', False)
+    
+    # Generate or use provided job ID
+    import uuid
+    if not job_id:
+        job_id = str(uuid.uuid4())
+        click.echo(f"🆔 Generated Job ID: {job_id}")
+    else:
+        click.echo(f"🆔 Using Job ID: {job_id}")
     
     async def scrape():
         scraper = HMRCSoftwareListScraper()
@@ -235,11 +248,11 @@ def scrape_urls(ctx, source_url: str, output_file: Path, format: str, minimal: b
             
             if minimal:
                 # Save only URLs, one per line
-                scraper.save_urls_minimal(entries, output_file)
+                scraper.save_urls_minimal(entries, output_file, job_id=job_id)
                 click.echo(f"✅ Saved {len(unique_urls)} unique URLs to {output_file}")
             else:
                 # Save as text file with comments and metadata
-                scraper.save_urls_to_file(entries, output_file)
+                scraper.save_urls_to_file(entries, output_file, job_id=job_id)
                 click.echo(f"✅ Saved {len(entries)} entries ({len(unique_urls)} unique domains) to {output_file}")
             
         elif format == 'json':
@@ -251,6 +264,7 @@ def scrape_urls(ctx, source_url: str, output_file: Path, format: str, minimal: b
                 import json
                 with open(json_output_file, 'w') as f:
                     json.dump({
+                        'job_id': job_id,
                         'source_url': source_url,
                         'scraped_at': datetime.now(timezone.utc).isoformat(),
                         'total_unique_urls': len(unique_urls),
@@ -262,6 +276,7 @@ def scrape_urls(ctx, source_url: str, output_file: Path, format: str, minimal: b
                 import json
                 with open(json_output_file, 'w') as f:
                     json.dump({
+                        'job_id': job_id,
                         'source_url': source_url,
                         'scraped_at': datetime.now(timezone.utc).isoformat(),
                         'total_entries': len(entries),
@@ -346,7 +361,7 @@ def scrape_and_analyze(ctx, source_url: str, output_dir: Path, concurrent_reques
         
         # Save the scraped URLs for reference
         urls_file = output_dir / "scraped-hmrc-urls.txt"
-        scraper.save_urls_to_file(entries, urls_file)
+        scraper.save_urls_to_file(entries, urls_file, job_id=None)  # No job_id for scrape-and-analyze command
         
         # Create configuration for analysis
         from .models.config import AIConfig, ProcessingConfig, OutputConfig

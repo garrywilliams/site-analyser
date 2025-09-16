@@ -194,22 +194,25 @@ class HMRCSoftwareListScraper:
         
         return company_name, product_name
     
-    def save_urls_to_file(self, entries: List[Dict[str, str]], output_file: Path) -> None:
+    def save_urls_to_file(self, entries: List[Dict[str, str]], output_file: Path, job_id: Optional[str] = None) -> None:
         """Save scraped URLs to a text file."""
         output_file.parent.mkdir(parents=True, exist_ok=True)
         
         with open(output_file, 'w') as f:
             f.write(f"# HMRC Making Tax Digital Software Vendor URLs\n")
-            f.write(f"# Scraped {len(entries)} entries\n\n")
+            f.write(f"# Scraped {len(entries)} entries\n")
+            if job_id:
+                f.write(f"# Job ID: {job_id}\n")
+            f.write(f"\n")
             
             for entry in entries:
                 f.write(f"# Company: {entry['company_name']}\n")
                 f.write(f"# Product: {entry['product_name']}\n")
                 f.write(f"{entry['website_url']}\n\n")
         
-        logger.info("urls_saved_to_file", file=str(output_file), count=len(entries))
+        logger.info("urls_saved_to_file", file=str(output_file), count=len(entries), job_id=job_id)
     
-    def save_urls_minimal(self, entries: List[Dict[str, str]], output_file: Path, unique_only: bool = True) -> None:
+    def save_urls_minimal(self, entries: List[Dict[str, str]], output_file: Path, unique_only: bool = True, job_id: Optional[str] = None) -> None:
         """Save URLs to file in minimal format - just URLs, one per line."""
         output_file.parent.mkdir(parents=True, exist_ok=True)
         
@@ -222,10 +225,12 @@ class HMRCSoftwareListScraper:
             urls_to_save = [entry['website_url'] for entry in entries if entry.get('website_url')]
         
         with open(output_file, 'w') as f:
+            if job_id:
+                f.write(f"# Job ID: {job_id}\n")
             for url in urls_to_save:
                 f.write(f"{url}\n")
         
-        logger.info("urls_saved_minimal", file=str(output_file), count=len(urls_to_save), unique_only=unique_only)
+        logger.info("urls_saved_minimal", file=str(output_file), count=len(urls_to_save), unique_only=unique_only, job_id=job_id)
     
     def get_unique_domains(self, entries: List[Dict[str, str]]) -> List[str]:
         """Extract unique domains from the scraped URLs."""
