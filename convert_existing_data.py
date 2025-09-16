@@ -19,18 +19,62 @@ def extract_job_id_from_filename(filename: str) -> Optional[str]:
 
 def extract_url_from_filename(filename: str, urls_list: List[str]) -> Optional[str]:
     """Try to match filename to original URL from list."""
-    # Extract domain from filename
-    filename_parts = filename.split('_')
-    if len(filename_parts) >= 3:
-        # Get domain part (usually index 1)
-        domain_part = filename_parts[1]
+    # Remove job ID prefix and file extension
+    # Pattern: job_id_domain_parts_hash_type.ext
+    parts = filename.split('_')
+    
+    if len(parts) < 4:  # Need at least job_id, domain_part, hash, type
+        return None
+    
+    # Remove job ID (first part) and hash + type (last 2-3 parts)
+    # The domain is everything in between
+    domain_parts = parts[1:-2]  # Remove job_id, hash, and type
+    
+    # Try different domain reconstruction approaches
+    possible_domains = []
+    
+    # Approach 1: Join all domain parts with dots
+    if domain_parts:
+        domain_with_dots = '.'.join(domain_parts)
+        possible_domains.append(domain_with_dots)
         
-        # Try to match with URLs in list
-        for url in urls_list:
-            # Convert URL to expected domain format
-            url_domain = url.replace('https://', '').replace('http://', '').replace('www.', '').replace('/', '').replace(':', '_').replace('.', '_')
-            if domain_part == url_domain or domain_part in url_domain:
-                return url
+        # Also try with www prefix
+        if not domain_with_dots.startswith('www'):
+            possible_domains.append(f"www.{domain_with_dots}")
+    
+    # Approach 2: Direct hash matching - calculate hash for each URL
+    for url in urls_list:
+        url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
+        
+        # Check if this hash matches the filename hash
+        filename_hash = None
+        if len(parts) >= 3:
+            # Hash is typically the second-to-last part
+            filename_hash = parts[-2]
+            
+        if filename_hash == url_hash:
+            return url
+    
+    # Approach 3: Domain matching with URL list
+    for url in urls_list:
+        # Extract domain from URL
+        url_clean = url.replace('https://', '').replace('http://', '').split('/')[0]
+        url_domain_parts = url_clean.replace('.', '_').replace(':', '_')
+        
+        # Check if filename contains this domain pattern
+        filename_domain = '_'.join(domain_parts)
+        if (filename_domain == url_domain_parts or 
+            filename_domain in url_domain_parts or
+            url_domain_parts in filename_domain):
+            return url
+        
+        # Also try without www
+        url_no_www = url_clean.replace('www.', '')
+        url_no_www_parts = url_no_www.replace('.', '_').replace(':', '_')
+        if (filename_domain == url_no_www_parts or
+            filename_domain in url_no_www_parts or
+            url_no_www_parts in filename_domain):
+            return url
     
     return None
 
@@ -47,7 +91,7 @@ def load_urls_from_file(urls_file: Path) -> List[str]:
 
 def find_matching_files(directory: Path, job_id: str) -> Dict[str, Dict]:
     """Find all screenshot and HTML files for the job ID."""
-    files_by_url = {}
+    files_by_hash = {}
     
     # Find all files with the job ID
     for file_path in directory.iterdir():
@@ -58,22 +102,27 @@ def find_matching_files(directory: Path, job_id: str) -> Dict[str, Dict]:
         file_job_id = extract_job_id_from_filename(filename)
         
         if file_job_id == job_id:
-            # Determine file type
-            if filename.endswith('_screenshot.png'):
-                url_key = filename.replace(f'{job_id}_', '').replace('_screenshot.png', '')
-                if url_key not in files_by_url:
-                    files_by_url[url_key] = {}
-                files_by_url[url_key]['screenshot_file'] = filename
-                files_by_url[url_key]['screenshot_path'] = file_path
-                
-            elif filename.endswith('_html.html'):
-                url_key = filename.replace(f'{job_id}_', '').replace('_html.html', '')
-                if url_key not in files_by_url:
-                    files_by_url[url_key] = {}
-                files_by_url[url_key]['html_file'] = filename
-                files_by_url[url_key]['html_path'] = file_path
+            # Extract hash from filename for grouping
+            # Pattern: job_id_domain_parts_hash_type.ext
+            parts = filename.split('_')
+            
+            if len(parts) >= 3:
+                # Determine file type and extract hash
+                if filename.endswith('_screenshot.png'):
+                    hash_key = parts[-2]  # Hash is second-to-last part
+                    if hash_key not in files_by_hash:
+                        files_by_hash[hash_key] = {}
+                    files_by_hash[hash_key]['screenshot_file'] = filename
+                    files_by_hash[hash_key]['screenshot_path'] = file_path
+                    
+                elif filename.endswith('_html.html'):
+                    hash_key = parts[-2]  # Hash is second-to-last part  
+                    if hash_key not in files_by_hash:
+                        files_by_hash[hash_key] = {}
+                    files_by_hash[hash_key]['html_file'] = filename
+                    files_by_hash[hash_key]['html_path'] = file_path
     
-    return files_by_url
+    return files_by_hash
 
 def create_screenshot_results_json(
     directory: Path, 
@@ -88,39 +137,32 @@ def create_screenshot_results_json(
     if not urls:
         raise ValueError(f"No URLs found in {urls_file}")
     
-    # Find files in directory
-    files_by_key = find_matching_files(directory, job_id)
-    if not files_by_key:
+    # Find files in directory (now grouped by hash)
+    files_by_hash = find_matching_files(directory, job_id)
+    if not files_by_hash:
         raise ValueError(f"No files found with job ID {job_id} in {directory}")
     
-    print(f"Found {len(files_by_key)} file groups for job ID {job_id}")
+    print(f"Found {len(files_by_hash)} file groups for job ID {job_id}")
     print(f"Loaded {len(urls)} URLs from {urls_file}")
     
     # Create results structure
     results = []
     matched_urls = set()
     
-    for url_key, files in files_by_key.items():
-        # Try to match to original URL
-        matched_url = None
-        for url in urls:
-            url_normalized = url.replace('https://', '').replace('http://', '').replace('www.', '').replace('/', '').replace(':', '_').replace('.', '_')
-            if url_key.startswith(url_normalized) or url_normalized.startswith(url_key):
-                matched_url = url
-                matched_urls.add(url)
-                break
+    for hash_key, files in files_by_hash.items():
+        # Get a filename to work with for URL matching
+        sample_filename = files.get('screenshot_file') or files.get('html_file')
+        if not sample_filename:
+            continue
+            
+        # Try to match filename to original URL using our improved logic
+        matched_url = extract_url_from_filename(sample_filename, urls)
         
-        if not matched_url:
-            # Try partial matching
-            domain_from_key = url_key.split('_')[0] if '_' in url_key else url_key
-            for url in urls:
-                if domain_from_key in url.replace('www.', ''):
-                    matched_url = url
-                    matched_urls.add(url)
-                    break
-        
-        if not matched_url:
-            print(f"Warning: Could not match file key '{url_key}' to any URL")
+        if matched_url:
+            matched_urls.add(matched_url)
+        else:
+            print(f"Warning: Could not match hash '{hash_key}' (file: {sample_filename}) to any URL")
+            print(f"  Available URLs sample: {urls[:3]}...")
             continue
         
         # Get file info
