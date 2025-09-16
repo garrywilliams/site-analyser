@@ -280,7 +280,7 @@ class SimpleSiteChecker:
             compliance_content = []
             for keyword in compliance_keywords:
                 # Find elements containing these keywords
-                elements = soup.find_all(text=lambda text: text and keyword.lower() in text.lower())
+                elements = soup.find_all(string=lambda string: string and keyword.lower() in string.lower())
                 for element in elements[:3]:  # Max 3 per keyword
                     parent_text = element.parent.get_text().strip() if element.parent else str(element).strip()
                     if len(parent_text) < 500:  # Reasonable length
