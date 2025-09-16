@@ -52,6 +52,7 @@ class SiteAnalysisResult(BaseModel):
     # Core data
     html_content: Optional[str] = None
     screenshot_path: Optional[Path] = None
+    html_file_path: Optional[Path] = None  # Path to saved HTML file
     final_url: Optional[str] = None  # URL after following redirects
     
     # SSL Analysis

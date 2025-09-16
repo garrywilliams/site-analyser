@@ -17,10 +17,12 @@ logger = structlog.get_logger()
 class WebScraperProcessor(BaseProcessor):
     """Processor for web scraping HTML content and capturing screenshots."""
     
-    def __init__(self, config):
+    def __init__(self, config, job_id: Optional[str] = None, save_html: bool = False):
         super().__init__(config)
         self.version = "1.0.0"
         self.browser: Optional[Browser] = None
+        self.job_id = job_id
+        self.save_html = save_html
     
     async def __aenter__(self):
         """Async context manager entry."""
@@ -147,6 +149,14 @@ class WebScraperProcessor(BaseProcessor):
                     result.html_content = await page.content()
                     logger.debug("html_content_extracted", url=url, 
                                content_length=len(result.html_content))
+                    
+                    # Save HTML content if requested
+                    if self.save_html:
+                        try:
+                            await self._save_html_content(url, result)
+                        except Exception as e:
+                            logger.warning("html_save_failed", url=url, error=str(e))
+                            
                 except Exception as e:
                     logger.warning("html_extraction_failed", url=url, error=str(e))
                 
@@ -193,15 +203,8 @@ class WebScraperProcessor(BaseProcessor):
         screenshots_dir.mkdir(parents=True, exist_ok=True)
         logger.info("screenshot_directory_created", directory=str(screenshots_dir.absolute()))
         
-        # Generate filename from URL
-        from urllib.parse import urlparse
-        parsed_url = urlparse(url)
-        safe_filename = f"{parsed_url.netloc.replace('.', '_')}_{parsed_url.path.replace('/', '_').strip('_')}"
-        if not safe_filename or safe_filename == "_":
-            safe_filename = "root"
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        screenshot_filename = f"{safe_filename}_{timestamp}.png"
+        # Generate filename from URL with job ID support
+        screenshot_filename = self._generate_filename(url, "screenshot", "png")
         screenshot_path = screenshots_dir / screenshot_filename
         
         logger.info("screenshot_path_generated", 
@@ -238,3 +241,63 @@ class WebScraperProcessor(BaseProcessor):
             raise
         
         logger.info("screenshot_capture_completed", url=url, path=str(screenshot_path))
+    
+    async def _save_html_content(self, url: str, result: SiteAnalysisResult) -> None:
+        """Save HTML content to file."""
+        if not result.html_content:
+            logger.warning("no_html_content_to_save", url=url)
+            return
+            
+        logger.info("html_save_started", url=url)
+        
+        # Use the same directory as screenshots for HTML files
+        html_dir = self.config.output_config.screenshots_directory
+        html_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate filename for HTML
+        html_filename = self._generate_filename(url, "html", "html")
+        html_path = html_dir / html_filename
+        
+        try:
+            # Write HTML content to file
+            with open(html_path, 'w', encoding='utf-8') as f:
+                f.write(result.html_content)
+            
+            # Verify file was created
+            if html_path.exists():
+                file_size = html_path.stat().st_size
+                logger.info("html_saved_successfully", 
+                           url=url, 
+                           path=str(html_path.absolute()),
+                           size_bytes=file_size)
+                result.html_file_path = html_path
+            else:
+                logger.error("html_file_not_found", url=url, path=str(html_path.absolute()))
+                
+        except Exception as e:
+            logger.error("html_save_failed", url=url, error=str(e), path=str(html_path))
+            raise
+    
+    def _generate_filename(self, url: str, file_type: str, extension: str) -> str:
+        """Generate filename with job ID support for consistent naming."""
+        from urllib.parse import urlparse
+        import hashlib
+        
+        # Create URL hash for uniqueness
+        url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
+        
+        # Parse URL for readable part
+        parsed_url = urlparse(url)
+        domain = parsed_url.netloc.replace('.', '_').replace(':', '_')
+        if not domain:
+            domain = "unknown"
+        
+        if self.job_id:
+            # Job ID format: {job_id}_{domain}_{url_hash}_{file_type}.{extension}
+            filename = f"{self.job_id}_{domain}_{url_hash}_{file_type}.{extension}"
+        else:
+            # Legacy timestamp format for backwards compatibility
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{domain}_{url_hash}_{timestamp}_{file_type}.{extension}"
+        
+        return filename

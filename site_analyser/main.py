@@ -443,6 +443,16 @@ def scrape_and_analyze(ctx, source_url: str, output_dir: Path, concurrent_reques
     is_flag=True,
     help='Enable verbose logging output'
 )
+@click.option(
+    '--save-html',
+    is_flag=True,
+    help='Save raw HTML content to files'
+)
+@click.option(
+    '--job-id',
+    type=str,
+    help='Job ID (UUID) for relating resources across runs. If not provided, a new UUID will be generated.'
+)
 @click.pass_context
 def screenshot(
     ctx,
@@ -454,10 +464,20 @@ def screenshot(
     viewport_width: int,
     viewport_height: int,
     stealth: bool,
-    verbose: bool
+    verbose: bool,
+    save_html: bool,
+    job_id: Optional[str]
 ):
     """Capture screenshots of websites using Playwright (no AI analysis)."""
     debug = ctx.obj.get('debug', False) or verbose
+    
+    # Generate or use provided job ID
+    import uuid
+    if not job_id:
+        job_id = str(uuid.uuid4())
+        click.echo(f"🆔 Generated Job ID: {job_id}")
+    else:
+        click.echo(f"🆔 Using Job ID: {job_id}")
     
     # Set up logging level based on verbose flag
     if verbose:
@@ -510,6 +530,7 @@ def screenshot(
         click.echo(f"⚙️  Viewport: {viewport_width}x{viewport_height}")
         click.echo(f"⏱️  Timeout: {timeout}s per URL")
         click.echo(f"🔧 Concurrent requests: {concurrent_requests}")
+        click.echo(f"💾 Save HTML: {'Yes' if save_html else 'No'}")
         click.echo(f"🔍 Debug mode: {debug}")
         click.echo(f"📋 URLs to process:")
         for i, url in enumerate(url_list, 1):
@@ -523,7 +544,7 @@ def screenshot(
                 try:
                     click.echo(f"🚀 Starting screenshot capture for: {url}")
                     
-                    async with WebScraperProcessor(config) as processor:
+                    async with WebScraperProcessor(config, job_id=job_id, save_html=save_html) as processor:
                         click.echo(f"📱 Browser initialized for: {url}")
                         
                         # Create initial result
@@ -541,6 +562,8 @@ def screenshot(
                         if result.screenshot_path:
                             click.echo(f"📸 Screenshot saved: {result.screenshot_path}")
                             click.echo(f"📍 Full path: {result.screenshot_path.absolute()}")
+                            if result.html_file_path:
+                                click.echo(f"📄 HTML saved: {result.html_file_path}")
                             if result.final_url and result.final_url != url:
                                 click.echo(f"🔀 Redirect: {url} → {result.final_url}")
                         else:
@@ -597,21 +620,25 @@ def screenshot(
                 })
             else:
                 results_details.append({
+                    "job_id": job_id,
                     "original_url": url,
                     "final_url": result.final_url if hasattr(result, 'final_url') and result.final_url else url,
                     "redirected": bool(hasattr(result, 'final_url') and result.final_url and result.final_url != url),
                     "status": "success" if (result.site_loads and result.screenshot_path) else "failed",
                     "screenshot_file": result.screenshot_path.name if (hasattr(result, 'screenshot_path') and result.screenshot_path) else None,
+                    "html_file": result.html_file_path.name if (hasattr(result, 'html_file_path') and result.html_file_path) else None,
                     "load_time_ms": getattr(result, 'load_time_ms', None),
                     "error_message": getattr(result, 'error_message', None)
                 })
         
         summary = {
+            "job_id": job_id,
             "timestamp": datetime.now().isoformat(),
             "total_urls": len(url_list),
             "successful": successful,
             "failed": failed,
             "redirected": redirected,
+            "save_html_enabled": save_html,
             "urls": url_list,
             "output_directory": str(output_dir),
             "viewport": f"{viewport_width}x{viewport_height}",
