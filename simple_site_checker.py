@@ -28,7 +28,7 @@ logger = structlog.get_logger()
 class SimpleSiteChecker:
     """Simplified site compliance checker using Agno agents."""
     
-    def __init__(self, model_id: str = "gpt-4o-mini", api_key: str = "", base_url: str = ""):
+    def __init__(self, model_id: str = "gpt-4o-mini", api_key: str = "", base_url: str = "", skip_large_images: bool = False):
         self.db_config = {
             'host': os.getenv('DB_HOST', 'localhost'),
             'port': int(os.getenv('DB_PORT', '5432')),
@@ -48,8 +48,9 @@ class SimpleSiteChecker:
         )
         
         self.agent = Agent(model=self.model)
+        self.skip_large_images = skip_large_images
         
-        logger.info("agent_initialized", model_id=model_id, base_url=base_url)
+        logger.info("agent_initialized", model_id=model_id, base_url=base_url, skip_large_images=skip_large_images)
     
     async def get_active_records(self, limit: Optional[int] = None) -> List[Dict]:
         """Fetch active records from database."""
@@ -85,21 +86,73 @@ class SimpleSiteChecker:
         """Rough estimate of token count (4 chars ≈ 1 token)."""
         return len(text) // 4
     
-    def should_split_analysis(self, prompt: str, has_image: bool = False) -> bool:
+    def estimate_image_tokens(self, image_data: bytes) -> int:
+        """Estimate token count for base64 encoded image."""
+        # Base64 encoding increases size by ~33%
+        base64_size = len(image_data) * 4 // 3
+        # Each base64 char is roughly 1 token (conservative estimate)
+        return base64_size
+    
+    def should_split_analysis(self, prompt: str, image_data: Optional[bytes] = None) -> bool:
         """Determine if analysis should be split due to context limits."""
-        # Rough estimates:
-        # - Base prompt: ~500-1000 tokens
-        # - Image: ~1000-2000 tokens (depending on size/detail)
-        # - HTML content: variable
-        # - Safety margin: 20% of 128k = ~25k tokens
-        
         estimated_tokens = self.estimate_token_count(prompt)
-        if has_image:
-            estimated_tokens += 1500  # Image overhead
         
-        max_safe_tokens = 100000  # Leave 28k tokens for response
+        if image_data:
+            image_tokens = self.estimate_image_tokens(image_data)
+            estimated_tokens += image_tokens
+            logger.info("token_estimation", 
+                       prompt_tokens=self.estimate_token_count(prompt),
+                       image_tokens=image_tokens,
+                       total_estimated=estimated_tokens)
+        
+        max_safe_tokens = 120000  # Leave 8k tokens for response
         
         return estimated_tokens > max_safe_tokens
+    
+    def resize_image_if_needed(self, image_data: bytes, max_dimension: int = 1024) -> bytes:
+        """Resize image if it's too large to reduce token usage."""
+        try:
+            from PIL import Image
+            import io
+            
+            # Load image
+            img = Image.open(io.BytesIO(image_data))
+            
+            # Check if resize is needed
+            if max(img.width, img.height) <= max_dimension:
+                return image_data  # No resize needed
+            
+            # Calculate new dimensions maintaining aspect ratio
+            if img.width > img.height:
+                new_width = max_dimension
+                new_height = int((max_dimension * img.height) / img.width)
+            else:
+                new_height = max_dimension
+                new_width = int((max_dimension * img.width) / img.height)
+            
+            # Resize image
+            resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            
+            # Save to bytes
+            output_buffer = io.BytesIO()
+            resized_img.save(output_buffer, format='PNG', optimize=True)
+            resized_data = output_buffer.getvalue()
+            
+            original_size = len(image_data)
+            new_size = len(resized_data)
+            compression_ratio = new_size / original_size
+            
+            logger.info("image_resized", 
+                       original_size=original_size,
+                       new_size=new_size,
+                       compression_ratio=f"{compression_ratio:.2f}",
+                       dimensions=f"{new_width}x{new_height}")
+            
+            return resized_data
+            
+        except Exception as e:
+            logger.warning("image_resize_failed", error=str(e))
+            return image_data  # Return original if resize fails
     
     def extract_relevant_html_content(self, html_content: str) -> str:
         """Extract only relevant parts of HTML for analysis."""
@@ -392,19 +445,46 @@ Respond ONLY with valid JSON.
         visual_results = {}
         if record['screenshot_image']:
             try:
+                # First, resize image if it's too large
+                image_data = self.resize_image_if_needed(record['screenshot_image'], max_dimension=1024)
+                
                 visual_prompt = self.create_visual_analysis_prompt(company_name, url)
                 
-                # Check if we need to do image-only analysis
-                if self.should_split_analysis(visual_prompt, has_image=True):
-                    logger.info("using_image_only_analysis", id=record_id, reason="context_too_large")
-                    # Use a shorter prompt for image analysis
+                # Check if we still need to split analysis after image resize
+                if self.should_split_analysis(visual_prompt, image_data):
+                    logger.info("using_short_visual_analysis", id=record_id, reason="context_still_too_large")
+                    # Use a much shorter prompt
                     short_visual_prompt = self.create_short_visual_prompt(company_name, url)
-                    visual_response = await self.call_agent(short_visual_prompt, record['screenshot_image'])
+                    
+                    # If still too large, either skip image or use text-only analysis
+                    if self.should_split_analysis(short_visual_prompt, image_data):
+                        if self.skip_large_images:
+                            logger.warning("skipping_large_image", id=record_id, 
+                                         image_tokens=self.estimate_image_tokens(image_data))
+                            visual_results = {
+                                "skipped": True,
+                                "reason": "Image too large for context window",
+                                "image_tokens": self.estimate_image_tokens(image_data)
+                            }
+                            # Continue to next analysis
+                        else:
+                            logger.warning("using_minimal_image_prompt", id=record_id, 
+                                         image_tokens=self.estimate_image_tokens(image_data))
+                            # Use the absolute minimal prompt
+                            minimal_prompt = f"Analyze this website screenshot for government trademark violations and design quality issues. Company: {company_name}. Respond with brief JSON assessment."
+                            visual_response = await self.call_agent(minimal_prompt, image_data)
+                            visual_results = visual_response
+                    else:
+                        visual_response = await self.call_agent(short_visual_prompt, image_data)
+                        visual_results = visual_response
                 else:
-                    visual_response = await self.call_agent(visual_prompt, record['screenshot_image'])
+                    visual_response = await self.call_agent(visual_prompt, image_data)
+                    visual_results = visual_response
                 
-                visual_results = visual_response
-                logger.info("visual_analysis_completed", id=record_id)
+                if not visual_results.get("skipped"):
+                    logger.info("visual_analysis_completed", id=record_id)
+                else:
+                    logger.info("visual_analysis_skipped", id=record_id)
             except Exception as e:
                 logger.error("visual_analysis_failed", id=record_id, error=str(e))
                 visual_results = {"error": str(e)}
@@ -592,6 +672,8 @@ async def main():
                         help='Output CSV file path')
     parser.add_argument('--dry-run', action='store_true',
                         help='Run analysis without marking records as completed')
+    parser.add_argument('--skip-large-images', action='store_true',
+                        help='Skip image analysis if image is too large for context window')
     
     args = parser.parse_args()
     
@@ -610,7 +692,8 @@ async def main():
         checker = SimpleSiteChecker(
             model_id=args.model_id,
             api_key=args.api_key,
-            base_url=args.base_url
+            base_url=args.base_url,
+            skip_large_images=args.skip_large_images
         )
         
         results = await checker.run_analysis(
