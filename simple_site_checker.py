@@ -490,7 +490,7 @@ Respond ONLY with valid JSON.
             return {"error": str(e)}
     
     async def analyze_record(self, record: Dict) -> Dict:
-        """Analyze a single database record."""
+        """Analyze a single database record with separate image and content analysis."""
         company_name = record['company_name']
         url = record['original_url']
         record_id = record['id']
@@ -507,97 +507,163 @@ Respond ONLY with valid JSON.
             'analysis_timestamp': datetime.now().isoformat(),
         }
         
-        # 1. Visual Analysis (if we have screenshot data)
-        visual_results = {}
-        if record['screenshot_image']:
-            try:
-                # First, resize image aggressively if it's too large  
-                image_data = self.resize_image_if_needed(record['screenshot_image'], max_dimension=768, quality=75)
-                
-                visual_prompt = self.create_visual_analysis_prompt(company_name, url)
-                
-                # Check if we still need to split analysis after image resize
-                if self.should_split_analysis(visual_prompt, image_data):
-                    logger.info("using_short_visual_analysis", id=record_id, reason="context_still_too_large")
-                    # Use a much shorter prompt
-                    short_visual_prompt = self.create_short_visual_prompt(company_name, url)
-                    
-                    # If still too large, try aggressive compression
-                    if self.should_split_analysis(short_visual_prompt, image_data):
-                        if self.skip_large_images:
-                            logger.warning("skipping_large_image", id=record_id, 
-                                         image_tokens=self.estimate_image_tokens(image_data))
-                            visual_results = {
-                                "skipped": True,
-                                "reason": "Image too large for context window",
-                                "image_tokens": self.estimate_image_tokens(image_data)
-                            }
-                        else:
-                            logger.info("attempting_aggressive_compression", id=record_id)
-                            # Try to compress image to fit in ~50k tokens
-                            compressed_image = self.compress_image_aggressively(image_data, target_tokens=50000)
-                            
-                            # Try with compressed image and minimal prompt
-                            minimal_prompt = f"Analyze this website screenshot for government trademark violations and design quality issues. Company: {company_name}. Respond with brief JSON assessment."
-                            
-                            if self.should_split_analysis(minimal_prompt, compressed_image):
-                                logger.error("image_still_too_large_after_compression", 
-                                           id=record_id, 
-                                           final_tokens=self.estimate_image_tokens(compressed_image))
-                                visual_results = {
-                                    "error": "Image too large even after aggressive compression",
-                                    "final_tokens": self.estimate_image_tokens(compressed_image)
-                                }
-                            else:
-                                logger.info("submitting_to_model", 
-                                          id=record_id,
-                                          estimated_total_tokens=self.estimate_token_count(minimal_prompt) + self.estimate_image_tokens(compressed_image),
-                                          prompt_tokens=self.estimate_token_count(minimal_prompt),
-                                          image_tokens=self.estimate_image_tokens(compressed_image))
-                                visual_response = await self.call_agent(minimal_prompt, compressed_image)
-                                visual_results = visual_response
-                    else:
-                        visual_response = await self.call_agent(short_visual_prompt, image_data)
-                        visual_results = visual_response
-                else:
-                    visual_response = await self.call_agent(visual_prompt, image_data)
-                    visual_results = visual_response
-                
-                if not visual_results.get("skipped"):
-                    logger.info("visual_analysis_completed", id=record_id)
-                else:
-                    logger.info("visual_analysis_skipped", id=record_id)
-            except Exception as e:
-                logger.error("visual_analysis_failed", id=record_id, error=str(e))
-                visual_results = {"error": str(e)}
+        # Run both analyses concurrently for better performance
+        visual_task = self.analyze_image_separately(record) if record['screenshot_image'] else None
+        content_task = self.analyze_content_separately(record) if record['html_content'] else None
         
-        # 2. Content Analysis (if we have HTML)
-        content_results = {}
-        if record['html_content']:
-            try:
-                content_prompt = self.create_compliance_prompt(company_name, url, record['html_content'])
-                
-                # Check token count and adjust if needed
-                if self.should_split_analysis(content_prompt):
-                    logger.info("using_minimal_content_analysis", id=record_id, reason="context_too_large")
-                    # Use shorter extracted content
-                    shorter_content = self.extract_relevant_html_content(record['html_content'])[:2000]
-                    content_prompt = self.create_compliance_prompt(company_name, url, shorter_content)
-                
-                content_response = await self.call_agent(content_prompt)
-                content_results = content_response
-                logger.info("content_analysis_completed", id=record_id)
-            except Exception as e:
-                logger.error("content_analysis_failed", id=record_id, error=str(e))
-                content_results = {"error": str(e)}
+        # Wait for both to complete
+        if visual_task and content_task:
+            visual_results, content_results = await asyncio.gather(visual_task, content_task, return_exceptions=True)
+        elif visual_task:
+            visual_results = await visual_task
+            content_results = {}
+        elif content_task:
+            content_results = await content_task
+            visual_results = {}
+        else:
+            visual_results = {}
+            content_results = {}
         
-        # Combine results
-        results.update({
-            'visual_analysis': visual_results,
-            'content_analysis': content_results
-        })
+        # Handle exceptions
+        if isinstance(visual_results, Exception):
+            logger.error("visual_analysis_failed", id=record_id, error=str(visual_results))
+            visual_results = {"error": str(visual_results)}
+            
+        if isinstance(content_results, Exception):
+            logger.error("content_analysis_failed", id=record_id, error=str(content_results))
+            content_results = {"error": str(content_results)}
+        
+        # Merge results
+        merged_results = self.merge_analysis_results(visual_results, content_results)
+        results.update(merged_results)
         
         return results
+    
+    async def analyze_image_separately(self, record: Dict) -> Dict:
+        """Analyze image/screenshot separately with focused visual prompt."""
+        company_name = record['company_name']
+        url = record['original_url']
+        record_id = record['id']
+        
+        try:
+            # Optimize image for single-purpose analysis
+            image_data = self.resize_image_if_needed(record['screenshot_image'], max_dimension=768, quality=75)
+            
+            # Create focused image-only prompt (much shorter)
+            image_prompt = f"""Analyze this website screenshot for visual compliance issues:
+
+COMPANY: {company_name}
+URL: {url}
+
+Assess for:
+1. UK Government visual violations (Crown logos, gov.uk styling, official colors)
+2. HMRC visual violations (HMRC branding, tax authority styling)  
+3. Design professionalism and trust indicators
+
+JSON response only:
+{{
+    "govt_visual_violations": {{"found": true/false, "details": "brief description"}},
+    "hmrc_visual_violations": {{"found": true/false, "details": "brief description"}},
+    "design_quality": {{"professional": true/false, "issues": "main issues"}},
+    "visual_risk_level": "none/low/medium/high",
+    "summary": "One sentence visual assessment"
+}}"""
+
+            # Much smaller context - should almost always fit
+            if self.should_split_analysis(image_prompt, image_data):
+                # Try even more aggressive compression if needed
+                compressed_image = self.compress_image_aggressively(image_data, target_tokens=30000)
+                if self.should_split_analysis(image_prompt, compressed_image):
+                    if self.skip_large_images:
+                        return {"skipped": True, "reason": "Image too large"}
+                    else:
+                        # Ultra-minimal prompt as last resort
+                        ultra_minimal = f"Analyze screenshot for government trademark violations. Company: {company_name}. Brief JSON response."
+                        response = await self.call_agent(ultra_minimal, compressed_image)
+                else:
+                    response = await self.call_agent(image_prompt, compressed_image)
+            else:
+                response = await self.call_agent(image_prompt, image_data)
+            
+            logger.info("image_analysis_completed", id=record_id)
+            return response
+            
+        except Exception as e:
+            logger.error("image_analysis_failed", id=record_id, error=str(e))
+            return {"error": str(e)}
+    
+    async def analyze_content_separately(self, record: Dict) -> Dict:
+        """Analyze HTML content separately with focused content prompt."""
+        company_name = record['company_name']
+        url = record['original_url']
+        record_id = record['id']
+        
+        try:
+            # Extract only the most relevant HTML content
+            relevant_content = self.extract_relevant_html_content(record['html_content'])
+            
+            # Create focused content-only prompt (no image context needed)
+            content_prompt = f"""Analyze this website content for compliance issues:
+
+COMPANY: {company_name}
+URL: {url}
+
+CONTENT:
+{relevant_content}
+
+Assess for:
+1. UK Government trademark violations (unauthorized gov terms, Crown references)
+2. HMRC trademark violations (unauthorized HMRC branding, misleading tax authority claims)
+3. Business legitimacy (contact info, professional content, required legal pages)
+4. Tax service compliance (appropriate disclaimers, qualification statements)
+
+JSON response only:
+{{
+    "govt_content_violations": {{"found": true/false, "details": "brief description"}},
+    "hmrc_content_violations": {{"found": true/false, "details": "brief description"}},
+    "legitimacy_concerns": {{"found": true/false, "details": "main concerns"}},
+    "tax_compliance": {{"compliant": true/false, "details": "compliance issues"}},
+    "content_risk_level": "none/low/medium/high",
+    "summary": "One sentence content assessment"
+}}"""
+
+            # Text-only analysis should be much smaller
+            if self.should_split_analysis(content_prompt):
+                # Further reduce content if still too large
+                shorter_content = relevant_content[:1500]  # Even more aggressive
+                content_prompt = content_prompt.replace(relevant_content, shorter_content)
+            
+            response = await self.call_agent(content_prompt)
+            logger.info("content_analysis_completed", id=record_id)
+            return response
+            
+        except Exception as e:
+            logger.error("content_analysis_failed", id=record_id, error=str(e))
+            return {"error": str(e)}
+    
+    def merge_analysis_results(self, visual_results: Dict, content_results: Dict) -> Dict:
+        """Merge separate visual and content analysis into unified results for CSV."""
+        merged = {
+            'visual_analysis': visual_results,
+            'content_analysis': content_results
+        }
+        
+        # Create unified risk assessment
+        visual_risk = visual_results.get('visual_risk_level', 'none')
+        content_risk = content_results.get('content_risk_level', 'none')
+        
+        # Determine overall risk (take the higher of the two)
+        risk_levels = {'none': 0, 'low': 1, 'medium': 2, 'high': 3}
+        overall_risk_level = max(
+            risk_levels.get(visual_risk, 0),
+            risk_levels.get(content_risk, 0)
+        )
+        overall_risk = [k for k, v in risk_levels.items() if v == overall_risk_level][0]
+        
+        merged['overall_risk_assessment'] = overall_risk
+        merged['analysis_method'] = 'separate_prompts'
+        
+        return merged
     
     async def mark_record_processed(self, record_id: int) -> None:
         """Mark a record as processed in the database."""
