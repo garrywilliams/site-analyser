@@ -462,9 +462,19 @@ Respond ONLY with valid JSON.
             if image_data:
                 # Vision request with image
                 image_url = self.create_image_message(image_data)
-                # Create message with both text and image
+                logger.info("sending_image_to_agent", 
+                           image_size=len(image_data), 
+                           image_url_preview=image_url[:100] + "..." if len(image_url) > 100 else image_url)
+                
+                # Create message with both text and image - try Agno's expected format
                 messages = [
-                    {"role": "user", "content": f"Image: {image_url}\n\n{prompt}"}
+                    {
+                        "role": "user", 
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": image_url}}
+                        ]
+                    }
                 ]
                 
                 # Run agent with image context
@@ -482,8 +492,11 @@ Respond ONLY with valid JSON.
             # Try to parse as JSON
             try:
                 return json.loads(content)
-            except json.JSONDecodeError:
-                return {"raw_response": content, "parse_error": "Failed to parse JSON"}
+            except json.JSONDecodeError as e:
+                logger.warning("json_parse_failed", 
+                             raw_response_preview=content[:500] + "..." if len(content) > 500 else content,
+                             parse_error=str(e))
+                return {"raw_response": content, "parse_error": f"Failed to parse JSON: {str(e)}"}
                 
         except Exception as e:
             logger.error("agent_call_failed", error=str(e))
