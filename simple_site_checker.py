@@ -493,6 +493,19 @@ Respond ONLY with valid JSON.
             try:
                 return json.loads(content)
             except json.JSONDecodeError as e:
+                # Try to extract JSON from markdown code blocks
+                import re
+                json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
+                if json_match:
+                    try:
+                        json_content = json_match.group(1).strip()
+                        logger.info("extracted_json_from_markdown", json_preview=json_content[:200])
+                        return json.loads(json_content)
+                    except json.JSONDecodeError as e2:
+                        logger.warning("markdown_json_parse_failed", 
+                                     extracted_content=json_content[:300],
+                                     parse_error=str(e2))
+                
                 logger.warning("json_parse_failed", 
                              raw_response_preview=content[:500] + "..." if len(content) > 500 else content,
                              parse_error=str(e))
