@@ -68,6 +68,7 @@ The `site_analysis_data` table contains:
 - `load_time_ms` - Page load time
 - `viewport_size` - Screenshot dimensions (e.g., "1920x1080")
 - `analysis_status` - pending/in_progress/completed/failed
+- `is_active` - Toggle for selective processing (TRUE by default)
 - `processed_at` - When record was inserted
 
 ## Company Name Extraction
@@ -78,13 +79,34 @@ The loader tries multiple methods to get company names:
 2. **HTML meta tags** - `og:site_name`, `title`, `h1`  
 3. **Domain fallback** - parsed from URL
 
+## Managing Active Records
+
+Use the `manage_active_records.py` utility to control which records Agno agents process:
+
+```bash
+# Show summary of active/inactive records
+python manage_active_records.py summary
+
+# List all records with their active status
+python manage_active_records.py list
+
+# Deactivate specific domains (won't be processed)
+python manage_active_records.py deactivate --domains "test.com" "example.org"
+
+# Activate specific record IDs
+python manage_active_records.py activate --ids 1 2 3
+
+# Reset all records to active
+python manage_active_records.py activate --all
+```
+
 ## Query Examples
 
 ```sql
--- View all pending records for a job
+-- View active pending records for Agno processing
 SELECT job_id, company_name, original_url, analysis_status 
 FROM site_analysis_data 
-WHERE job_id = 'your-job-id' AND analysis_status = 'pending';
+WHERE is_active = true AND analysis_status = 'pending';
 
 -- Find duplicate images by hash
 SELECT screenshot_hash, COUNT(*), array_agg(company_name)
@@ -92,10 +114,18 @@ FROM site_analysis_data
 GROUP BY screenshot_hash 
 HAVING COUNT(*) > 1;
 
--- Get records with redirects
+-- Get active records with redirects
 SELECT company_name, original_url, final_url 
 FROM site_analysis_data 
-WHERE redirected = true;
+WHERE redirected = true AND is_active = true;
+
+-- Count active vs inactive by job
+SELECT job_id, 
+       COUNT(*) as total,
+       COUNT(*) FILTER (WHERE is_active = true) as active,
+       COUNT(*) FILTER (WHERE is_active = false) as inactive
+FROM site_analysis_data 
+GROUP BY job_id;
 ```
 
 ## Processing Pipeline

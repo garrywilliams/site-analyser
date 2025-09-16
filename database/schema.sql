@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS site_analysis_data (
     
     -- Processing status
     analysis_status VARCHAR(20) DEFAULT 'pending', -- pending, in_progress, completed, failed
+    is_active BOOLEAN DEFAULT TRUE, -- Toggle for selective processing by Agno agents
     processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     
     -- Original file references (for debugging)
@@ -41,6 +42,8 @@ CREATE TABLE IF NOT EXISTS site_analysis_data (
 CREATE INDEX IF NOT EXISTS idx_site_analysis_job_id ON site_analysis_data (job_id);
 CREATE INDEX IF NOT EXISTS idx_site_analysis_domain ON site_analysis_data (domain);
 CREATE INDEX IF NOT EXISTS idx_site_analysis_status ON site_analysis_data (analysis_status);
+CREATE INDEX IF NOT EXISTS idx_site_analysis_is_active ON site_analysis_data (is_active);
+CREATE INDEX IF NOT EXISTS idx_site_analysis_active_pending ON site_analysis_data (is_active, analysis_status);
 CREATE INDEX IF NOT EXISTS idx_site_analysis_processed_at ON site_analysis_data (processed_at);
 CREATE INDEX IF NOT EXISTS idx_site_analysis_screenshot_hash ON site_analysis_data (screenshot_hash);
 
@@ -50,3 +53,4 @@ COMMENT ON COLUMN site_analysis_data.job_id IS 'UUID linking all resources from 
 COMMENT ON COLUMN site_analysis_data.company_name IS 'Company name from original HMRC scraper data';
 COMMENT ON COLUMN site_analysis_data.screenshot_hash IS 'SHA-256 hash of the screenshot image for deduplication';
 COMMENT ON COLUMN site_analysis_data.analysis_status IS 'Status: pending, in_progress, completed, failed';
+COMMENT ON COLUMN site_analysis_data.is_active IS 'Toggle for selective processing - only active records are analyzed by Agno agents';

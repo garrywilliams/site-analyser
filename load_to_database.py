@@ -414,7 +414,8 @@ class DatabaseLoader:
                         'screenshot_file_size': len(image_data),
                         'screenshot_filename': screenshot_file,
                         'html_filename': html_file,
-                        'analysis_status': 'pending'
+                        'analysis_status': 'pending',
+                        'is_active': True
                     }
                     
                     records.append(record)
@@ -444,9 +445,9 @@ class DatabaseLoader:
                 job_id, original_url, final_url, company_name, domain,
                 html_content, html_content_length, screenshot_image, screenshot_hash,
                 load_time_ms, redirected, viewport_size, screenshot_file_size,
-                screenshot_filename, html_filename, analysis_status
+                screenshot_filename, html_filename, analysis_status, is_active
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
             )
             ON CONFLICT (job_id, original_url) 
             DO UPDATE SET
@@ -462,6 +463,8 @@ class DatabaseLoader:
                 screenshot_file_size = EXCLUDED.screenshot_file_size,
                 screenshot_filename = EXCLUDED.screenshot_filename,
                 html_filename = EXCLUDED.html_filename,
+                analysis_status = EXCLUDED.analysis_status,
+                is_active = EXCLUDED.is_active,
                 processed_at = NOW()
         """
         
@@ -487,7 +490,8 @@ class DatabaseLoader:
                         record['screenshot_file_size'],
                         record['screenshot_filename'],
                         record['html_filename'],
-                        record['analysis_status']
+                        record['analysis_status'],
+                        record['is_active']
                     )
                     
                     if 'INSERT' in result:
