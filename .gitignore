@@ -195,4 +195,5 @@ Thumbs.db
 # Temporary analysis files
 analyze_results.py
 temp_*
-scratch_*
+scratch_*scraping_output/
+scraping_output/

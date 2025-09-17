@@ -27,14 +27,13 @@ uv run playwright install chromium
 ## Quick Start
 
 ```bash
-# Scrape URLs from command line
+# Option 1: Using the site-scraper command (recommended)
+uv run site-scraper https://example.com https://test.com
+uv run site-scraper --urls-file example-urls.txt
+
+# Option 2: Using python module
 uv run python -m preprocessing https://example.com https://test.com
-
-# Scrape URLs from file
 uv run python -m preprocessing --urls-file example-urls.txt
-
-# Using the installed script
-uv run site-scraper --urls-file urls.txt
 ```
 
 ## Usage Examples
@@ -43,33 +42,33 @@ uv run site-scraper --urls-file urls.txt
 
 ```bash
 # Single URL
-uv run python -m preprocessing https://example.com
+uv run site-scraper https://example.com
 
 # Multiple URLs
-uv run python -m preprocessing https://example.com https://google.com https://github.com
+uv run site-scraper https://example.com https://google.com https://github.com
 
 # URLs from file
-uv run python -m preprocessing --urls-file my-urls.txt
+uv run site-scraper --urls-file my-urls.txt
 ```
 
 ### Advanced Configuration
 
 ```bash
 # Custom output directory and job ID
-uv run python -m preprocessing \
+uv run site-scraper \
   --urls-file urls.txt \
   --output-dir ./results \
   --job-id my-batch-2025
 
 # Adjust viewport and performance settings
-uv run python -m preprocessing \
+uv run site-scraper \
   --urls-file urls.txt \
   --viewport 1366x768 \
   --timeout 20000 \
   --max-concurrent 3
 
 # Custom user agent
-uv run python -m preprocessing \
+uv run site-scraper \
   --urls-file urls.txt \
   --user-agent "MyBot/1.0"
 ```

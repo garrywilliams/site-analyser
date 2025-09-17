@@ -17,7 +17,7 @@ import structlog
 from .scraper import SiteScraper, ScrapingConfig
 
 
-async def main():
+async def async_main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
         description='Site Scraper - Capture screenshots and HTML from URLs',
@@ -160,5 +160,10 @@ Examples:
         return 1
 
 
+def main():
+    """Synchronous entry point for script usage."""
+    return asyncio.run(async_main())
+
+
 if __name__ == "__main__":
-    exit(asyncio.run(main()))
+    exit(main())
