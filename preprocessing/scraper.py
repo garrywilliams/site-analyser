@@ -9,13 +9,14 @@ Handles redirects, timeouts, and data extraction for subsequent analysis.
 import asyncio
 import hashlib
 import json
+import re
 import ssl
 import socket
 import uuid
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from urllib.parse import urlparse, urljoin
 
 import structlog
@@ -53,6 +54,20 @@ class SSLInfo:
     certificate_error: Optional[str] = None
 
 
+@dataclass
+class BotProtectionInfo:
+    """Bot protection detection information."""
+    detected: bool
+    protection_type: Optional[str] = None  # "cloudflare", "ddos_guard", "recaptcha", "rate_limit", "unknown"
+    indicators: List[str] = None  # List of evidence that suggests bot protection
+    confidence: float = 0.0  # 0.0 to 1.0 confidence that this is bot protection
+    
+    def __post_init__(self):
+        """Set default empty list for indicators."""
+        if self.indicators is None:
+            self.indicators = []
+
+
 @dataclass  
 class ScrapingResult:
     """Result of scraping a single URL."""
@@ -69,6 +84,7 @@ class ScrapingResult:
     viewport_size: str
     redirected: bool
     ssl_info: SSLInfo
+    bot_protection: BotProtectionInfo
     status: str  # success, timeout, error
     error_message: Optional[str] = None
     timestamp: str = None
@@ -288,6 +304,139 @@ class SiteScraper:
                 certificate_error=f"Certificate check failed: {str(e)}"
             )
     
+    def detect_bot_protection(self, html_content: str, error_message: Optional[str] = None) -> BotProtectionInfo:
+        """Detect bot protection measures based on HTML content and error messages."""
+        indicators = []
+        
+        # Known bot protection indicators (from main site analyser)
+        cloudflare_indicators = [
+            "cloudflare", "cf-ray", "cf-mitigated", "checking your browser",
+            "ddos protection by cloudflare", "attention required", "ray id:",
+        ]
+        
+        ddos_guard_indicators = [
+            "ddos-guard", "checking your browser before accessing",
+            "ddosguard.net", "under ddos attack",
+        ]
+        
+        recaptcha_indicators = [
+            "recaptcha", "i'm not a robot", "google.com/recaptcha",
+            "verify you are human",
+        ]
+        
+        rate_limit_indicators = [
+            "rate limit", "too many requests", "requests per minute",
+            "try again later", "temporary block",
+        ]
+        
+        generic_bot_indicators = [
+            "bot protection", "automated traffic", "suspicious activity",
+            "access denied", "forbidden", "verification required", "human verification",
+        ]
+        
+        # Analyze HTML content
+        if html_content:
+            html_lower = html_content.lower()
+            
+            # Check for Cloudflare indicators
+            for indicator in cloudflare_indicators:
+                if indicator in html_lower:
+                    indicators.append(f"cloudflare_{indicator.replace(' ', '_')}")
+            
+            # Check for DDoS Guard indicators  
+            for indicator in ddos_guard_indicators:
+                if indicator in html_lower:
+                    indicators.append(f"ddos_guard_{indicator.replace(' ', '_')}")
+            
+            # Check for reCAPTCHA indicators
+            for indicator in recaptcha_indicators:
+                if indicator in html_lower:
+                    indicators.append(f"recaptcha_{indicator.replace(' ', '_')}")
+            
+            # Check for rate limit indicators
+            for indicator in rate_limit_indicators:
+                if indicator in html_lower:
+                    indicators.append(f"rate_limit_{indicator.replace(' ', '_')}")
+            
+            # Check for generic bot protection
+            for indicator in generic_bot_indicators:
+                if indicator in html_lower:
+                    indicators.append(f"generic_{indicator.replace(' ', '_')}")
+            
+            # Check for JavaScript challenges
+            if "challenge" in html_lower and ("javascript" in html_lower or "js" in html_lower):
+                indicators.append("javascript_challenge")
+            
+            # Check for meta refresh redirects (common in challenges)
+            if re.search(r'<meta[^>]*http-equiv=["\']?refresh["\']?', html_lower):
+                indicators.append("meta_refresh_redirect")
+        
+        # Analyze error messages
+        if error_message:
+            error_lower = error_message.lower()
+            
+            # HTTP status code indicators
+            if "403" in error_message or "forbidden" in error_lower:
+                indicators.append("http_403_forbidden")
+            if "429" in error_message or "too many requests" in error_lower:
+                indicators.append("http_429_rate_limit")
+            if "503" in error_message or "service unavailable" in error_lower:
+                indicators.append("http_503_service_unavailable")
+            
+            # Common bot protection error phrases
+            bot_protection_phrases = [
+                "access denied", "forbidden", "blocked", "suspicious activity",
+                "automated traffic", "bot detected", "rate limit", "too many requests",
+                "verification required", "challenge",
+            ]
+            
+            for phrase in bot_protection_phrases:
+                if phrase in error_lower:
+                    indicators.append(f"error_message_{phrase.replace(' ', '_')}")
+        
+        # Determine protection type and confidence
+        if not indicators:
+            return BotProtectionInfo(detected=False)
+        
+        protection_type, confidence = self._determine_protection_type(indicators)
+        detected = confidence > 0.3  # Threshold for detection
+        
+        return BotProtectionInfo(
+            detected=detected,
+            protection_type=protection_type,
+            indicators=list(set(indicators)),  # Remove duplicates
+            confidence=confidence
+        )
+    
+    def _determine_protection_type(self, indicators: List[str]) -> Tuple[Optional[str], float]:
+        """Determine the type of bot protection and confidence level."""
+        cloudflare_score = sum(1 for ind in indicators if "cloudflare" in ind)
+        ddos_guard_score = sum(1 for ind in indicators if "ddos_guard" in ind)
+        recaptcha_score = sum(1 for ind in indicators if "recaptcha" in ind)
+        rate_limit_score = sum(1 for ind in indicators if "rate_limit" in ind or "429" in ind)
+        generic_score = sum(1 for ind in indicators if "generic" in ind or "403" in ind or "blocked" in ind)
+        
+        # Calculate confidence based on number and strength of indicators
+        max_score = max(cloudflare_score, ddos_guard_score, recaptcha_score, rate_limit_score, generic_score)
+        total_indicators = len(indicators)
+        
+        # Base confidence on number of indicators and strongest category
+        confidence = min((max_score * 0.4) + (total_indicators * 0.1), 1.0)
+        
+        # Determine protection type
+        if cloudflare_score > 0:
+            return "cloudflare", max(confidence, 0.7)  # Cloudflare is usually obvious
+        elif ddos_guard_score > 0:
+            return "ddos_guard", max(confidence, 0.7)
+        elif recaptcha_score > 0:
+            return "recaptcha", max(confidence, 0.6)
+        elif rate_limit_score > 0:
+            return "rate_limit", max(confidence, 0.8)  # Rate limits are clear
+        elif generic_score > 0:
+            return "unknown", max(confidence, 0.4)
+        
+        return None, confidence
+    
     async def scrape_url(self, url: str) -> ScrapingResult:
         """Scrape a single URL and return the result."""
         start_time = asyncio.get_event_loop().time()
@@ -340,6 +489,9 @@ class SiteScraper:
             # Check SSL certificate (after page is closed to avoid conflicts)
             ssl_info = await self.check_ssl_certificate(final_url)
             
+            # Detect bot protection
+            bot_protection = self.detect_bot_protection(html_content)
+            
             # Calculate load time
             end_time = asyncio.get_event_loop().time()
             load_time_ms = int((end_time - start_time) * 1000)
@@ -358,6 +510,7 @@ class SiteScraper:
                 viewport_size=f"{self.config.viewport_width}x{self.config.viewport_height}",
                 redirected=redirected,
                 ssl_info=ssl_info,
+                bot_protection=bot_protection,
                 status="success"
             )
             
@@ -368,7 +521,9 @@ class SiteScraper:
                        company=company_name,
                        has_ssl=ssl_info.has_ssl,
                        ssl_valid=ssl_info.is_valid,
-                       ssl_expires_days=ssl_info.days_until_expiry)
+                       ssl_expires_days=ssl_info.days_until_expiry,
+                       bot_protection_detected=bot_protection.detected,
+                       bot_protection_type=bot_protection.protection_type)
             
             return result
             
@@ -377,6 +532,9 @@ class SiteScraper:
             
             # Still try to check SSL even if page load timed out
             ssl_info = await self.check_ssl_certificate(url)
+            
+            # Detect bot protection based on timeout (might indicate bot blocking)
+            bot_protection = self.detect_bot_protection("", "Page load timeout")
             
             return ScrapingResult(
                 job_id=self.config.job_id,
@@ -392,6 +550,7 @@ class SiteScraper:
                 viewport_size=f"{self.config.viewport_width}x{self.config.viewport_height}",
                 redirected=False,
                 ssl_info=ssl_info,
+                bot_protection=bot_protection,
                 status="timeout",
                 error_message="Page load timeout"
             )
@@ -410,6 +569,9 @@ class SiteScraper:
                     certificate_error="Could not check certificate due to scraping failure"
                 )
             
+            # Detect bot protection based on error message
+            bot_protection = self.detect_bot_protection("", str(e))
+            
             return ScrapingResult(
                 job_id=self.config.job_id,
                 original_url=original_url,
@@ -424,6 +586,7 @@ class SiteScraper:
                 viewport_size=f"{self.config.viewport_width}x{self.config.viewport_height}",
                 redirected=False,
                 ssl_info=ssl_info,
+                bot_protection=bot_protection,
                 status="error",
                 error_message=str(e)
             )

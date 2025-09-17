@@ -176,6 +176,12 @@ def _format_result_for_tool(
             "days_until_expiry": result.ssl_info.days_until_expiry,
             "certificate_error": result.ssl_info.certificate_error
         },
+        "bot_protection": {
+            "detected": result.bot_protection.detected,
+            "protection_type": result.bot_protection.protection_type,
+            "indicators": result.bot_protection.indicators,
+            "confidence": result.bot_protection.confidence
+        },
         "performance": {
             "load_time_ms": result.load_time_ms,
             "viewport_size": result.viewport_size

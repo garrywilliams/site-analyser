@@ -9,6 +9,7 @@ A robust website preprocessing tool that captures screenshots, HTML content, and
 - 🔄 **Redirect Handling** - Tracks and follows redirects automatically
 - 🏢 **Company Name Detection** - Extracts company names using multiple methods
 - 🔒 **SSL Certificate Analysis** - Validates HTTPS and captures certificate details
+- 🛡️ **Bot Protection Detection** - Identifies Cloudflare, reCAPTCHA, rate limiting, and other anti-bot measures
 - 🚀 **Concurrent Processing** - Configurable concurrency with rate limiting
 - 📊 **Structured Output** - JSON results with comprehensive metadata
 - 🎯 **Deduplication** - SHA-256 hashing for screenshot deduplication
@@ -152,6 +153,12 @@ scraping_output/
         "days_until_expiry": 149,
         "certificate_error": null
       },
+      "bot_protection": {
+        "detected": false,
+        "protection_type": null,
+        "indicators": [],
+        "confidence": 0.0
+      },
       "status": "success",
       "error_message": null,
       "timestamp": "2025-01-17T10:30:01.234567"
@@ -171,6 +178,49 @@ The scraper automatically analyzes SSL certificates for HTTPS sites:
 - **expires_date**: Certificate expiration date (ISO format)
 - **days_until_expiry**: Days remaining until expiration
 - **certificate_error**: Details if certificate validation fails
+
+## Bot Protection Detection
+
+The scraper automatically detects various anti-bot and security measures that may block automated access:
+
+### Supported Protection Types
+
+- **Cloudflare** - DDoS protection, challenge pages, "Checking your browser" messages
+- **DDoS Guard** - Alternative DDoS protection service detection
+- **reCAPTCHA** - Google's "I'm not a robot" verification system
+- **Rate Limiting** - HTTP 429 errors, "too many requests" messages
+- **Generic Protection** - Access denied, forbidden, suspicious activity blocks
+
+### Detection Methods
+
+**HTML Content Analysis:**
+- Scans for known protection service signatures and challenge pages
+- Detects JavaScript challenge patterns and meta refresh redirects
+- Identifies human verification prompts and protection messages
+
+**Error Message Analysis:** 
+- HTTP status codes (403 Forbidden, 429 Rate Limited, 503 Service Unavailable)
+- Error text analysis for bot protection keywords
+- Network-level blocking detection
+
+**Output Structure:**
+```json
+"bot_protection": {
+  "detected": true,
+  "protection_type": "cloudflare",
+  "indicators": ["cloudflare_checking_your_browser", "javascript_challenge"],
+  "confidence": 0.8
+}
+```
+
+### Confidence Scoring
+
+- **0.0-0.3**: Unlikely to be bot protection
+- **0.4-0.6**: Possible bot protection detected
+- **0.7-0.8**: High confidence bot protection
+- **0.9-1.0**: Definitive bot protection identified
+
+This information helps identify sites that may require special handling or human verification for analysis.
 
 ## HTML Content Management
 
@@ -259,11 +309,34 @@ All results include detailed error messages when applicable.
 ### Government Site Monitoring
 ```bash
 # Monitor gov.uk sites with longer timeouts
-uv run python -m preprocessing \
+uv run site-scraper \
   --urls-file government-sites.txt \
   --job-id gov-compliance-2025-01 \
   --timeout 45000 \
   --viewport 1920x1080
+```
+
+### Bot Protection Analysis
+```bash
+# Check competitor sites for accessibility issues
+uv run site-scraper \
+  --urls-file competitor-sites.txt \
+  --job-id bot-protection-check \
+  --timeout 30000
+
+# Then analyze results for bot protection
+python -c "
+import json
+with open('scraping_output/bot-protection-check_scraping_results.json') as f:
+    data = json.load(f)
+    
+for result in data['results']:
+    bp = result['bot_protection']
+    if bp['detected']:
+        print(f'{result[\"company_name\"]}: {bp[\"protection_type\"]} (confidence: {bp[\"confidence\"]})')
+    else:
+        print(f'{result[\"company_name\"]}: No bot protection detected')
+"
 ```
 
 ### Mobile Site Testing
