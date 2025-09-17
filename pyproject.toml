@@ -35,6 +35,7 @@ dev = [
 
 [project.scripts]
 site-analyser = "site_analyser.main:cli"
+site-scraper = "preprocessing.cli:main"
 
 [build-system]
 requires = ["hatchling"]
