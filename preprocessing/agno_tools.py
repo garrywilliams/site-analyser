@@ -284,7 +284,8 @@ def _generate_focused_insights(ssl_results: List[Dict], scrape_results: List[Dic
                 content_data.append({
                     'url': result['url']['final'],
                     'company': result['content']['company_name'],
-                    'html_size': result['content']['html_length'],
+                    'html_size': result['content']['html_size'],
+                    'has_html_file': bool(result['content'].get('html_path')),
                     'has_screenshot': bool(result['content'].get('screenshot_path'))
                 })
         

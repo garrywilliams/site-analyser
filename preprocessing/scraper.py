@@ -61,7 +61,8 @@ class ScrapingResult:
     final_url: str
     domain: str
     company_name: Optional[str]
-    html_content: str
+    html_path: Optional[str]  # Path to saved HTML file
+    html_size: int  # Size in bytes for reference
     screenshot_path: Optional[str]
     screenshot_hash: Optional[str]
     load_time_ms: int
@@ -173,6 +174,21 @@ class SiteScraper:
     def calculate_screenshot_hash(self, screenshot_data: bytes) -> str:
         """Calculate SHA-256 hash of screenshot for deduplication."""
         return hashlib.sha256(screenshot_data).hexdigest()
+    
+    def load_html_content(self, result: ScrapingResult) -> str:
+        """Load HTML content from file for a scraping result."""
+        if not result.html_path:
+            return ""
+        
+        try:
+            html_file_path = self.config.output_dir / result.html_path
+            with open(html_file_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception as e:
+            logger.warning("html_load_failed", 
+                         html_path=result.html_path, 
+                         error=str(e))
+            return ""
     
     async def check_ssl_certificate(self, url: str) -> SSLInfo:
         """Check SSL certificate information for a URL."""
@@ -303,6 +319,14 @@ class SiteScraper:
             # Extract company name
             company_name = self.extract_company_name(html_content, final_url)
             
+            # Save HTML content to separate file
+            html_filename = f"{self.config.job_id}_{domain}_{int(start_time)}.html"
+            html_path = self.config.output_dir / "html" / html_filename
+            html_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(html_path, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            
             # Take screenshot
             screenshot_filename = f"{self.config.job_id}_{domain}_{int(start_time)}.png"
             screenshot_path = self.config.output_dir / "screenshots" / screenshot_filename
@@ -326,7 +350,8 @@ class SiteScraper:
                 final_url=final_url,
                 domain=domain,
                 company_name=company_name,
-                html_content=html_content,
+                html_path=str(html_path.relative_to(self.config.output_dir)),
+                html_size=len(html_content.encode('utf-8')),
                 screenshot_path=str(screenshot_path.relative_to(self.config.output_dir)),
                 screenshot_hash=screenshot_hash,
                 load_time_ms=load_time_ms,
@@ -359,7 +384,8 @@ class SiteScraper:
                 final_url=url,
                 domain=self.extract_domain(url),
                 company_name=self.extract_domain(url),
-                html_content="",
+                html_path=None,
+                html_size=0,
                 screenshot_path=None,
                 screenshot_hash=None,
                 load_time_ms=self.config.timeout_ms,
@@ -390,7 +416,8 @@ class SiteScraper:
                 final_url=url,
                 domain=self.extract_domain(url),
                 company_name=self.extract_domain(url),
-                html_content="",
+                html_path=None,
+                html_size=0,
                 screenshot_path=None,
                 screenshot_hash=None,
                 load_time_ms=int((asyncio.get_event_loop().time() - start_time) * 1000),

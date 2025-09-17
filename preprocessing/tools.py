@@ -104,7 +104,12 @@ async def scrape_websites(
             # Convert results to tool-friendly format
             processed_results = []
             for result in raw_results:
-                processed_result = _format_result_for_tool(result, return_html, save_screenshots)
+                processed_result = _format_result_for_tool(
+                    result, 
+                    include_html=return_html, 
+                    include_screenshot_path=save_screenshots,
+                    scraper=scraper
+                )
                 processed_results.append(processed_result)
             
             # Generate summary
@@ -146,7 +151,8 @@ async def scrape_websites(
 def _format_result_for_tool(
     result: ScrapingResult, 
     include_html: bool = True,
-    include_screenshot_path: bool = True
+    include_screenshot_path: bool = True,
+    scraper: Optional[SiteScraper] = None
 ) -> Dict[str, Any]:
     """Format a ScrapingResult for tool consumption."""
     formatted = {
@@ -158,7 +164,8 @@ def _format_result_for_tool(
         },
         "content": {
             "company_name": result.company_name,
-            "html_length": len(result.html_content) if result.html_content else 0,
+            "html_size": result.html_size,
+            "html_path": result.html_path,
         },
         "ssl": {
             "has_ssl": result.ssl_info.has_ssl,
@@ -181,8 +188,12 @@ def _format_result_for_tool(
     }
     
     # Conditionally include heavy data
-    if include_html and result.html_content:
-        formatted["content"]["html_content"] = result.html_content
+    if include_html and result.html_path and scraper:
+        try:
+            html_content = scraper.load_html_content(result)
+            formatted["content"]["html_content"] = html_content
+        except Exception as e:
+            formatted["content"]["html_load_error"] = str(e)
     
     if include_screenshot_path and result.screenshot_path:
         formatted["content"]["screenshot_path"] = result.screenshot_path

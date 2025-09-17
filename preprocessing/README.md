@@ -107,6 +107,9 @@ scraping_output/
 ├── screenshots/
 │   ├── job-id_example.com_timestamp.png
 │   └── job-id_google.com_timestamp.png
+├── html/
+│   ├── job-id_example.com_timestamp.html
+│   └── job-id_google.com_timestamp.html
 └── job-id_scraping_results.json
 ```
 
@@ -134,7 +137,8 @@ scraping_output/
       "final_url": "https://example.com/",
       "domain": "example.com",
       "company_name": "Example Corporation",
-      "html_content": "<!DOCTYPE html>...",
+      "html_path": "html/job-id_example.com_123456.html",
+      "html_size": 45678,
       "screenshot_path": "screenshots/job-id_example.com_123456.png",
       "screenshot_hash": "a1b2c3d4e5f6...",
       "load_time_ms": 1234,
@@ -168,6 +172,26 @@ The scraper automatically analyzes SSL certificates for HTTPS sites:
 - **expires_date**: Certificate expiration date (ISO format)
 - **days_until_expiry**: Days remaining until expiration
 - **certificate_error**: Details if certificate validation fails
+
+## HTML Content Management
+
+To keep JSON result files manageable, HTML content is saved to separate files:
+
+- **HTML files**: Saved to `html/job-id_domain_timestamp.html`
+- **JSON reference**: Contains `html_path` and `html_size` instead of full content
+- **On-demand loading**: Use the scraper's `load_html_content()` method when needed
+
+```python
+from preprocessing import SiteScraper, ScrapingConfig
+from pathlib import Path
+
+# Load results and access HTML when needed
+config = ScrapingConfig(job_id="existing-job", output_dir=Path("./results"))
+scraper = SiteScraper(config)
+
+# Assuming you have a result from the JSON
+html_content = scraper.load_html_content(result)
+```
 
 ## Company Name Detection
 
