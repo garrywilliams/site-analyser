@@ -8,7 +8,8 @@ This module provides tools for preprocessing websites before analysis:
 - Data storage preparation
 """
 
-from .scraper import SiteScraper, ScrapingConfig, ScrapingResult, SSLInfo, BotProtectionInfo
+from .models import ScrapingConfig, ScrapingResult, SSLInfo, BotProtectionInfo
+from .scraper import SiteScraper
 from .tools import scrape_websites, check_ssl_certificates, load_urls_from_file, AVAILABLE_TOOLS
 
 # Agno tools (optional import - only if agno is available or for future use)
