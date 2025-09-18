@@ -276,7 +276,7 @@ async def check_ssl_certificates(urls: Union[List[str], str]) -> Dict[str, Any]:
                 "with_ssl": sum(1 for r in results if r["ssl"]["has_ssl"]),
                 "valid_ssl": sum(1 for r in results if r["ssl"]["is_valid"]),
                 "expiring_soon": sum(1 for r in results 
-                                   if r["ssl"].get("days_until_expiry", 999) < 30)
+                                   if r["ssl"].get("days_until_expiry") is not None and r["ssl"].get("days_until_expiry") < 30)
             }
         }
         
