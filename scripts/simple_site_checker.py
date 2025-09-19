@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Simplified Site Checker - Proof of Concept
-Processes active database records with Agno agents and outputs findings to CSV.
+MTD Compliance Site Checker
+Processes website screenshots for Making Tax Digital compliance using Agno agents.
 """
 
 import asyncio
@@ -10,9 +10,10 @@ import csv
 import json
 import os
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Any
 
 import asyncpg
 import structlog
@@ -25,954 +26,693 @@ load_dotenv()
 
 logger = structlog.get_logger()
 
-class SimpleSiteChecker:
-    """Simplified site compliance checker using Agno agents."""
-    
-    def __init__(self, model_id: str = "gpt-4o-mini", api_key: str = "", base_url: str = "", skip_large_images: bool = False, table_name: str = "preprocessing_results", base_path: str = "."):
-        self.table_name = table_name
-        self.base_path = Path(base_path)
-        self.db_config = {
-            'host': os.getenv('POSTGRES_HOST', 'localhost'),
-            'port': int(os.getenv('POSTGRES_PORT', '5432')),
-            'database': os.getenv('POSTGRES_DB', 'site_analysis'),
-            'user': os.getenv('POSTGRES_USER', 'postgres'),
-            'password': os.getenv('POSTGRES_PASSWORD', ''),
-        }
-        
-        # Initialize Agno model and agent
-        if not api_key or not base_url:
-            raise ValueError("Both api_key and base_url are required for OpenAILike model")
-        
-        self.model = OpenAILike(
-            id=model_id,
-            api_key=api_key,
-            base_url=base_url
-        )
-        
-        self.agent = Agent(model=self.model)
-        self.skip_large_images = skip_large_images
-        
-        logger.info("agent_initialized", model_id=model_id, base_url=base_url, skip_large_images=skip_large_images)
-    
-    async def get_active_records(self, limit: Optional[int] = None) -> List[Dict]:
-        """Fetch active records from database."""
-        conn = await asyncpg.connect(**self.db_config)
-        
+
+class MTDDatabaseTools:
+    """Database tools for MTD compliance checking."""
+
+    def __init__(self, db_config: Dict[str, Any], source_table: str = "preprocessing_results"):
+        self.db_config = db_config
+        self.source_table = source_table
+
+    async def create_connection(self) -> asyncpg.Connection:
+        """Create database connection."""
         try:
-            query = f"""
-                SELECT id, job_id, company_name, original_url, final_url, domain,
-                       screenshot_path, html_path, load_time_ms, redirected,
-                       status, html_size
-                FROM {self.table_name}
-                WHERE is_active = true AND analysis_status = 'pending'
-                ORDER BY company_name, original_url
+            conn = await asyncpg.connect(**self.db_config)
+            return conn
+        except Exception as e:
+            logger.error("database_connection_failed", error=str(e))
+            raise
+
+    async def ensure_tables_exist(self):
+        """Create MTD tables if they don't exist."""
+        conn = await self.create_connection()
+        try:
+            # Create normalized AC results table
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS mtd_ac_results (
+                    id SERIAL PRIMARY KEY,
+                    job_id VARCHAR(255) NOT NULL,
+                    website_url TEXT NOT NULL,
+                    ac_number INTEGER NOT NULL CHECK (ac_number >= 1 AND ac_number <= 10),
+                    ac_result VARCHAR(20) NOT NULL,
+                    ac_confidence VARCHAR(10),
+                    ac_explanation TEXT,
+                    analysis_timestamp TIMESTAMP DEFAULT NOW(),
+                    ai_model_used VARCHAR(100),
+                    created_date TIMESTAMP DEFAULT NOW(),
+                    last_updated_date TIMESTAMP DEFAULT NOW(),
+                    version_num INTEGER DEFAULT 1,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_by VARCHAR(255) DEFAULT 'mtd_checker',
+                    last_updated_by VARCHAR(255) DEFAULT 'mtd_checker',
+                    remarks TEXT,
+                    UNIQUE(job_id, website_url, ac_number)
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_ac_results_job_id ON mtd_ac_results(job_id);
+                CREATE INDEX IF NOT EXISTS idx_ac_results_url ON mtd_ac_results(website_url);
+                CREATE INDEX IF NOT EXISTS idx_ac_results_ac_number ON mtd_ac_results(ac_number);
+                CREATE INDEX IF NOT EXISTS idx_ac_results_result ON mtd_ac_results(ac_result);
             """
-            
-            if limit:
-                query += f" LIMIT {limit}"
-            
-            rows = await conn.fetch(query)
-            records = [dict(row) for row in rows]
-            
-            logger.info("active_records_fetched", count=len(records), table=self.table_name)
-            return records
-            
+            )
+
+            # Create summary results table
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS mtd_compliance_summary (
+                    id SERIAL PRIMARY KEY,
+                    job_id VARCHAR(255) NOT NULL,
+                    website_url TEXT NOT NULL,
+                    overall_status VARCHAR(20),
+                    total_passed INTEGER DEFAULT 0,
+                    total_failed INTEGER DEFAULT 0,
+                    total_suspect INTEGER DEFAULT 0,
+                    analysis_timestamp TIMESTAMP DEFAULT NOW(),
+                    ai_model_used VARCHAR(100),
+                    created_date TIMESTAMP DEFAULT NOW(),
+                    last_updated_date TIMESTAMP DEFAULT NOW(),
+                    version_num INTEGER DEFAULT 1,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_by VARCHAR(255) DEFAULT 'mtd_checker',
+                    last_updated_by VARCHAR(255) DEFAULT 'mtd_checker',
+                    remarks TEXT,
+                    UNIQUE(job_id, website_url)
+                );
+                
+                CREATE INDEX IF NOT EXISTS idx_summary_job_id ON mtd_compliance_summary(job_id);
+                CREATE INDEX IF NOT EXISTS idx_summary_url ON mtd_compliance_summary(website_url);
+                CREATE INDEX IF NOT EXISTS idx_summary_status ON mtd_compliance_summary(overall_status);
+            """
+            )
+
+            logger.info("mtd_tables_ensured")
+
         finally:
             await conn.close()
-    
-    def load_screenshot_from_path(self, screenshot_path: str) -> Optional[bytes]:
-        """Load screenshot image from file path."""
-        if not screenshot_path:
-            return None
-            
+
+    async def fetch_image_from_db(self, job_id: str, website_url: str) -> Optional[bytes]:
+        """Fetch screenshot image from source table."""
+        conn = await self.create_connection()
         try:
-            # Combine with base_path if path is relative
-            path = Path(screenshot_path)
-            if not path.is_absolute():
-                path = self.base_path / path
-                
-            if path.exists():
-                with open(path, 'rb') as f:
-                    return f.read()
+            # Check if source table has screenshot_data column (BYTEA)
+            result = await conn.fetchrow(
+                f"""
+                SELECT screenshot_data FROM {self.source_table} 
+                WHERE job_id = $1 AND original_url = $2 AND is_active = TRUE
+            """,
+                job_id,
+                website_url,
+            )
+
+            if result and result["screenshot_data"]:
+                logger.info(
+                    "image_fetched_from_db", job_id=job_id, url=website_url, table=self.source_table
+                )
+                return bytes(result["screenshot_data"])
             else:
-                logger.warning("screenshot_file_not_found", path=str(path))
+                # Fallback: try to load from screenshot_path
+                result = await conn.fetchrow(
+                    f"""
+                    SELECT screenshot_path FROM {self.source_table} 
+                    WHERE job_id = $1 AND original_url = $2 AND is_active = TRUE
+                """,
+                    job_id,
+                    website_url,
+                )
+
+                if result and result["screenshot_path"]:
+                    screenshot_path = Path(result["screenshot_path"])
+                    if screenshot_path.exists():
+                        with open(screenshot_path, "rb") as f:
+                            image_data = f.read()
+                        logger.info(
+                            "image_loaded_from_path",
+                            job_id=job_id,
+                            url=website_url,
+                            path=str(screenshot_path),
+                        )
+                        return image_data
+
+                logger.warning(
+                    "image_not_found", job_id=job_id, url=website_url, table=self.source_table
+                )
                 return None
-        except Exception as e:
-            logger.error("screenshot_load_failed", path=screenshot_path, error=str(e))
-            return None
-    
-    def load_html_from_path(self, html_path: str) -> Optional[str]:
-        """Load HTML content from file path."""
-        if not html_path:
-            return None
-            
+
+        finally:
+            await conn.close()
+
+    async def save_ac_results(
+        self, job_id: str, website_url: str, results: Dict[str, Any], ai_model: str
+    ):
+        """Save individual AC results to normalized table."""
+        conn = await self.create_connection()
         try:
-            # Combine with base_path if path is relative
-            path = Path(html_path)
-            if not path.is_absolute():
-                path = self.base_path / path
-                
-            if path.exists():
-                with open(path, 'r', encoding='utf-8') as f:
-                    return f.read()
+            # Calculate totals
+            total_passed = 0
+            total_failed = 0
+            total_suspect = 0
+
+            # Insert individual AC results
+            for ac_key in results.keys():
+                if ac_key.startswith("ac") and isinstance(results[ac_key], dict):
+                    ac_number = int(ac_key[2:])  # Extract number from 'ac1', 'ac2', etc.
+                    ac_data = results[ac_key]
+
+                    result_value = ac_data.get("result", "").lower()
+                    if result_value == "pass":
+                        total_passed += 1
+                    elif result_value == "fail":
+                        total_failed += 1
+                    elif result_value == "suspect":
+                        total_suspect += 1
+
+                    await conn.execute(
+                        """
+                        INSERT INTO mtd_ac_results (
+                            job_id, website_url, ac_number, ac_result, ac_confidence, ac_explanation, ai_model_used
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        ON CONFLICT (job_id, website_url, ac_number) DO UPDATE SET
+                            ac_result = EXCLUDED.ac_result,
+                            ac_confidence = EXCLUDED.ac_confidence,
+                            ac_explanation = EXCLUDED.ac_explanation,
+                            ai_model_used = EXCLUDED.ai_model_used,
+                            last_updated_date = NOW(),
+                            version_num = mtd_ac_results.version_num + 1
+                    """,
+                        job_id,
+                        website_url,
+                        ac_number,
+                        ac_data.get("result", ""),
+                        ac_data.get("confidence", ""),
+                        ac_data.get("explanation", ""),
+                        ai_model,
+                    )
+
+            # Determine overall status
+            if total_failed > 0 or total_suspect > 0:
+                overall_status = "Fail"
+            elif total_passed > 0:
+                overall_status = "Pass"
             else:
-                logger.warning("html_file_not_found", path=str(path))
-                return None
-        except Exception as e:
-            logger.error("html_load_failed", path=html_path, error=str(e))
-            return None
-    
+                overall_status = "Unknown"
+
+            # Insert summary
+            await conn.execute(
+                """
+                INSERT INTO mtd_compliance_summary (
+                    job_id, website_url, overall_status, 
+                    total_passed, total_failed, total_suspect, ai_model_used
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (job_id, website_url) DO UPDATE SET
+                    overall_status = EXCLUDED.overall_status,
+                    total_passed = EXCLUDED.total_passed,
+                    total_failed = EXCLUDED.total_failed,
+                    total_suspect = EXCLUDED.total_suspect,
+                    ai_model_used = EXCLUDED.ai_model_used,
+                    last_updated_date = NOW(),
+                    version_num = mtd_compliance_summary.version_num + 1
+            """,
+                job_id,
+                website_url,
+                overall_status,
+                total_passed,
+                total_failed,
+                total_suspect,
+                ai_model,
+            )
+
+            logger.info(
+                "ac_results_saved",
+                job_id=job_id,
+                url=website_url,
+                overall_status=overall_status,
+                passed=total_passed,
+                failed=total_failed,
+                suspect=total_suspect,
+            )
+
+        finally:
+            await conn.close()
+
+    async def query_summary_by_job_id(self, job_id: str) -> List[Dict[str, Any]]:
+        """Query summary results for a job_id."""
+        conn = await self.create_connection()
+        try:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM mtd_compliance_summary 
+                WHERE job_id = $1 AND is_active = TRUE
+                ORDER BY website_url
+            """,
+                job_id,
+            )
+
+            results = [dict(row) for row in rows]
+            logger.info("summary_results_queried", job_id=job_id, count=len(results))
+            return results
+
+        finally:
+            await conn.close()
+
+    async def query_detailed_results_by_job_id(self, job_id: str) -> List[Dict[str, Any]]:
+        """Query detailed AC results for a job_id."""
+        conn = await self.create_connection()
+        try:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM mtd_ac_results 
+                WHERE job_id = $1 AND is_active = TRUE
+                ORDER BY website_url, ac_number
+            """,
+                job_id,
+            )
+
+            results = [dict(row) for row in rows]
+            logger.info("detailed_results_queried", job_id=job_id, count=len(results))
+            return results
+
+        finally:
+            await conn.close()
+
+
+class CoordinatorAgent:
+    """Orchestrates the MTD compliance workflow."""
+
+    def __init__(self, db_tools: MTDDatabaseTools, image_agent, reporting_agent):
+        self.db_tools = db_tools
+        self.image_agent = image_agent
+        self.reporting_agent = reporting_agent
+
+    async def process_job(self, job_id: str, website_urls: List[str]) -> str:
+        """Process a complete MTD compliance job."""
+        logger.info("coordinator_starting", job_id=job_id, url_count=len(website_urls))
+
+        # Process each website
+        for url in website_urls:
+            try:
+                await self.image_agent.analyze_website(job_id, url)
+                await asyncio.sleep(1)  # Rate limiting
+            except Exception as e:
+                logger.error("website_analysis_failed", job_id=job_id, url=url, error=str(e))
+
+        # Generate report
+        report_path = await self.reporting_agent.generate_report(job_id)
+
+        logger.info("coordinator_completed", job_id=job_id, report=report_path)
+        return report_path
+
+
+class SiteImageAnalysisAgent:
+    """Performs MTD compliance checks on website screenshots."""
+
+    def __init__(self, agent: Agent, db_tools: MTDDatabaseTools, model_id: str):
+        self.agent = agent
+        self.db_tools = db_tools
+        self.model_id = model_id
+
     def create_image_message(self, image_data: bytes) -> str:
-        """Create data URL for image to be used with Agno agent."""
-        image_b64 = base64.b64encode(image_data).decode('utf-8')
+        """Create data URL for image."""
+        image_b64 = base64.b64encode(image_data).decode("utf-8")
         return f"data:image/png;base64,{image_b64}"
-    
-    def estimate_token_count(self, text: str) -> int:
-        """Rough estimate of token count (4 chars ≈ 1 token)."""
-        return len(text) // 4
-    
-    def estimate_image_tokens(self, image_data: bytes) -> int:
-        """Estimate token count for base64 encoded image."""
-        # Base64 encoding increases size by ~33%
-        base64_size = len(image_data) * 4 // 3
-        # Each base64 char is roughly 1 token (conservative estimate)
-        return base64_size
-    
-    def should_split_analysis(self, prompt: str, image_data: Optional[bytes] = None) -> bool:
-        """Determine if analysis should be split due to context limits."""
-        estimated_tokens = self.estimate_token_count(prompt)
-        
-        if image_data:
-            image_tokens = self.estimate_image_tokens(image_data)
-            estimated_tokens += image_tokens
-            logger.info("token_estimation", 
-                       prompt_tokens=self.estimate_token_count(prompt),
-                       image_tokens=image_tokens,
-                       total_estimated=estimated_tokens)
-        
-        max_safe_tokens = 120000  # Leave 8k tokens for response
-        
-        return estimated_tokens > max_safe_tokens
-    
-    def resize_image_if_needed(self, image_data: bytes, max_dimension: int = 768, quality: int = 85) -> bytes:
-        """Resize image if it's too large to reduce token usage."""
+
+    def create_mtd_compliance_prompt(self, website_url: str) -> str:
+        """Create comprehensive MTD compliance check prompt."""
+        return f"""
+Analyze this website screenshot for Making Tax Digital (MTD) compliance. 
+
+WEBSITE URL: {website_url}
+
+Perform the following 10 acceptance criteria checks and return results in JSON format:
+
+AC1: HTTPS Compliance - Must be a HTTPS (secure encryption) web address
+AC2: Tax Product Link - Must provide link to the tax product with content relevant to service offered  
+AC3: Privacy Statement - Must provide visible links to privacy statement
+AC4: Terms & Conditions - Must provide visible links to Terms & Conditions
+AC5: Functioning Website - Must be a fully functioning website (not partially constructed)
+AC6: Personal Data - Must not request any personal customer data inappropriately
+AC7: HMRC Branding - Must not use HMRC branding or logos inappropriately
+AC8: HMRC Partnership - Must not claim to be in partnership with HMRC
+AC9: HMRC Recognition - Must only use term 'HMRC Recognised' appropriately
+AC10: Translation - Must be able to translate to English if foreign language product
+
+For each AC, provide:
+- result: Pass/Fail/Suspect
+- confidence: High/Medium/Low  
+- explanation: Brief reasoning (if result is Fail/Suspect)
+
+RESPONSE FORMAT (JSON only, no other text):
+{{
+    "ac1": {{
+        "result": "Pass/Fail",
+        "confidence": "High/Medium/Low",
+        "explanation": "Explanation if failed or suspect"
+    }},
+    "ac2": {{
+        "result": "Pass/Fail", 
+        "confidence": "High/Medium/Low",
+        "explanation": "Explanation if failed or suspect"
+    }},
+    "ac3": {{
+        "result": "Pass/Fail",
+        "confidence": "High/Medium/Low", 
+        "explanation": "Explanation if failed or suspect"
+    }},
+    "ac4": {{
+        "result": "Pass/Fail",
+        "confidence": "High/Medium/Low",
+        "explanation": "Explanation if failed or suspect"
+    }},
+    "ac5": {{
+        "result": "Pass/Fail",
+        "confidence": "High/Medium/Low",
+        "explanation": "Explanation if failed or suspect"
+    }},
+    "ac6": {{
+        "result": "Pass/Fail",
+        "confidence": "High/Medium/Low", 
+        "explanation": "Explanation if failed or suspect"
+    }},
+    "ac7": {{
+        "result": "Pass/Fail/Suspect",
+        "confidence": "High/Medium/Low",
+        "explanation": "Explanation if failed or suspect"
+    }},
+    "ac8": {{
+        "result": "Pass/Fail",
+        "confidence": "High/Medium/Low",
+        "explanation": "Explanation if failed or suspect"
+    }},
+    "ac9": {{
+        "result": "Pass/Fail",
+        "confidence": "High/Medium/Low", 
+        "explanation": "Explanation if failed or suspect"
+    }},
+    "ac10": {{
+        "result": "Pass/Fail",
+        "confidence": "High/Medium/Low",
+        "explanation": "Explanation if failed or suspect"
+    }}
+}}
+"""
+
+    async def analyze_website(self, job_id: str, website_url: str):
+        """Analyze a single website for MTD compliance."""
+        logger.info("analyzing_website", job_id=job_id, url=website_url)
+
+        # Fetch image from database
+        image_data = await self.db_tools.fetch_image_from_db(job_id, website_url)
+        if not image_data:
+            logger.error("no_image_data", job_id=job_id, url=website_url)
+            return
+
         try:
-            from PIL import Image
-            import io
-            
-            # Load image
-            img = Image.open(io.BytesIO(image_data))
-            
-            # Check if resize is needed
-            if max(img.width, img.height) <= max_dimension:
-                return image_data  # No resize needed
-            
-            # Calculate new dimensions maintaining aspect ratio
-            if img.width > img.height:
-                new_width = max_dimension
-                new_height = int((max_dimension * img.height) / img.width)
-            else:
-                new_height = max_dimension
-                new_width = int((max_dimension * img.width) / img.height)
-            
-            # Resize image
-            resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            
-            # Save to bytes with aggressive compression
-            output_buffer = io.BytesIO()
-            
-            # Try JPEG first for better compression (if not transparent)
-            if resized_img.mode in ('RGBA', 'LA'):
-                # Has transparency, stick with PNG but compress aggressively  
-                resized_img.save(output_buffer, format='PNG', optimize=True, compress_level=9)
-            else:
-                # No transparency, use JPEG for much better compression
-                if resized_img.mode != 'RGB':
-                    resized_img = resized_img.convert('RGB')
-                resized_img.save(output_buffer, format='JPEG', quality=quality, optimize=True)
-            
-            resized_data = output_buffer.getvalue()
-            
-            original_size = len(image_data)
-            new_size = len(resized_data)
-            compression_ratio = new_size / original_size
-            
-            logger.info("image_resized", 
-                       original_size=original_size,
-                       new_size=new_size,
-                       compression_ratio=f"{compression_ratio:.2f}",
-                       dimensions=f"{new_width}x{new_height}")
-            
-            return resized_data
-            
-        except Exception as e:
-            logger.warning("image_resize_failed", error=str(e))
-            return image_data  # Return original if resize fails
-    
-    def compress_image_aggressively(self, image_data: bytes, target_tokens: int = 50000) -> bytes:
-        """Compress image more aggressively to fit token limits."""
-        try:
-            from PIL import Image
-            import io
-            
-            img = Image.open(io.BytesIO(image_data))
-            
-            # Start with smaller dimensions and lower quality
-            max_dim = 512
-            quality = 60
-            
-            while max_dim >= 256:  # Don't go below 256px
-                # Resize
-                if max(img.width, img.height) > max_dim:
-                    if img.width > img.height:
-                        new_width = max_dim
-                        new_height = int((max_dim * img.height) / img.width)
-                    else:
-                        new_height = max_dim
-                        new_width = int((max_dim * img.width) / img.height)
-                    resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                else:
-                    resized_img = img
-                
-                # Compress
-                output_buffer = io.BytesIO()
-                if resized_img.mode != 'RGB':
-                    resized_img = resized_img.convert('RGB')
-                resized_img.save(output_buffer, format='JPEG', quality=quality, optimize=True)
-                compressed_data = output_buffer.getvalue()
-                
-                # Check if it fits our token budget
-                estimated_tokens = self.estimate_image_tokens(compressed_data)
-                if estimated_tokens <= target_tokens:
-                    logger.info("aggressive_compression_success", 
-                               original_tokens=self.estimate_image_tokens(image_data),
-                               final_tokens=estimated_tokens,
-                               dimensions=f"{new_width if 'new_width' in locals() else img.width}x{new_height if 'new_height' in locals() else img.height}",
-                               quality=quality)
-                    return compressed_data
-                
-                # Try smaller dimensions and lower quality
-                max_dim = int(max_dim * 0.8)
-                quality = max(30, quality - 10)
-            
-            # If we still can't fit, return the most compressed version we tried
-            logger.warning("aggressive_compression_insufficient", 
-                          final_tokens=self.estimate_image_tokens(compressed_data),
-                          target_tokens=target_tokens)
-            return compressed_data
-            
-        except Exception as e:
-            logger.warning("aggressive_compression_failed", error=str(e))
-            return image_data
-    
-    def extract_relevant_html_content(self, html_content: str) -> str:
-        """Extract only relevant parts of HTML for analysis."""
-        from bs4 import BeautifulSoup
-        
-        try:
-            soup = BeautifulSoup(html_content, 'html.parser')
-            
-            # Extract key elements for compliance analysis
-            relevant_content = []
-            
-            # 1. Title and meta
-            if soup.title:
-                relevant_content.append(f"TITLE: {soup.title.get_text().strip()}")
-            
-            # 2. Meta descriptions
-            meta_desc = soup.find('meta', attrs={'name': 'description'})
-            if meta_desc:
-                relevant_content.append(f"META_DESCRIPTION: {meta_desc.get('content', '').strip()}")
-            
-            # 3. Main headings (h1, h2, h3)
-            headings = []
-            for tag in ['h1', 'h2', 'h3']:
-                for element in soup.find_all(tag):
-                    text = element.get_text().strip()
-                    if text and len(text) < 200:  # Avoid overly long headings
-                        headings.append(f"{tag.upper()}: {text}")
-            
-            if headings:
-                relevant_content.append("HEADINGS:")
-                relevant_content.extend(headings[:10])  # Max 10 headings
-            
-            # 4. Navigation and menu items (potential gov/HMRC terminology)
-            nav_items = []
-            for nav in soup.find_all(['nav', 'menu']):
-                for link in nav.find_all('a'):
-                    text = link.get_text().strip()
-                    if text and len(text) < 100:
-                        nav_items.append(text)
-            
-            if nav_items:
-                relevant_content.append("NAVIGATION:")
-                relevant_content.extend(nav_items[:15])  # Max 15 nav items
-            
-            # 5. Footer content (often contains company/legal info)
-            footer = soup.find('footer')
-            if footer:
-                footer_text = footer.get_text().strip()
-                if footer_text:
-                    relevant_content.append(f"FOOTER: {footer_text[:1000]}")  # First 1000 chars
-            
-            # 6. Look for specific compliance-related terms
-            compliance_keywords = [
-                'privacy policy', 'terms of service', 'cookie policy', 'gdpr',
-                'hmrc', 'tax', 'vat', 'government', 'crown', 'official',
-                'contact', 'about', 'disclaimer', 'legal'
+            # Create prompt and image message
+            prompt = self.create_mtd_compliance_prompt(website_url)
+            image_url = self.create_image_message(image_data)
+
+            # Single LLM call with image and all AC checks
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                    ],
+                }
             ]
-            
-            compliance_content = []
-            for keyword in compliance_keywords:
-                # Find elements containing these keywords
-                elements = soup.find_all(string=lambda string: string and keyword.lower() in string.lower())
-                for element in elements[:3]:  # Max 3 per keyword
-                    parent_text = element.parent.get_text().strip() if element.parent else str(element).strip()
-                    if len(parent_text) < 500:  # Reasonable length
-                        compliance_content.append(parent_text)
-            
-            if compliance_content:
-                relevant_content.append("COMPLIANCE_CONTENT:")
-                relevant_content.extend(list(set(compliance_content))[:10])  # Dedupe and limit
-            
-            # Join all content
-            extracted_content = "\n".join(relevant_content)
-            
-            # Final length check - aim for ~4000 chars max
-            if len(extracted_content) > 4000:
-                extracted_content = extracted_content[:4000] + "... [TRUNCATED]"
-            
-            return extracted_content
-            
-        except Exception as e:
-            logger.warning("html_extraction_failed", error=str(e))
-            # Fallback to simple truncation
-            return html_content[:3000] + "... [EXTRACTION_FAILED]"
-    
-    def create_compliance_prompt(self, company_name: str, url: str, html_content: str) -> str:
-        """Create a comprehensive compliance assessment prompt."""
-        # Extract only relevant HTML content
-        html_snippet = self.extract_relevant_html_content(html_content)
-        
-        prompt = f"""
-Analyze this website for UK Government and HMRC trademark compliance and general business legitimacy issues.
 
-COMPANY: {company_name}
-URL: {url}
+            response = await self.agent.arun(input=messages)
 
-ASSESSMENT CRITERIA:
-1. UK Government Trademark Violations:
-   - Unauthorized use of Crown copyright, government logos, or official emblems
-   - Misleading use of "gov.uk", "HMRC", "HM Revenue", or similar official terminology
-   - Impersonation of government services or officials
-
-2. HMRC Trademark Violations:
-   - Unauthorized use of HMRC branding, logos, or terminology
-   - Misleading claims about HMRC endorsement or official status
-   - Use of HMRC-like visual design or color schemes inappropriately
-
-3. Business Legitimacy Concerns:
-   - Incomplete or missing contact information
-   - Unprofessional design or numerous errors
-   - Suspicious payment requests or pricing structures
-   - Missing privacy policy, terms of service, or other required legal pages
-
-4. Tax Service Compliance:
-   - Appropriate disclaimers about tax advice limitations
-   - Clear qualification statements from tax professionals
-   - Proper regulatory compliance mentions (if applicable)
-
-HTML CONTENT:
-{html_snippet}
-
-INSTRUCTIONS:
-Provide your assessment in this exact JSON format:
-{{
-    "uk_govt_violations": {{
-        "found": true/false,
-        "severity": "none/low/medium/high",
-        "details": "specific violations found or 'None detected'"
-    }},
-    "hmrc_violations": {{
-        "found": true/false,
-        "severity": "none/low/medium/high", 
-        "details": "specific violations found or 'None detected'"
-    }},
-    "legitimacy_concerns": {{
-        "found": true/false,
-        "severity": "none/low/medium/high",
-        "details": "specific concerns found or 'None detected'"
-    }},
-    "tax_compliance": {{
-        "compliant": true/false,
-        "severity": "none/low/medium/high",
-        "details": "compliance issues or 'Compliant'"
-    }},
-    "overall_risk": "none/low/medium/high",
-    "summary": "Brief 1-2 sentence summary of main findings"
-}}
-
-Respond ONLY with valid JSON - no other text.
-"""
-        return prompt
-    
-    def create_visual_analysis_prompt(self, company_name: str, url: str) -> str:
-        """Create a visual analysis prompt for screenshot assessment."""
-        prompt = f"""
-Analyze this website screenshot for visual trademark violations and design concerns.
-
-COMPANY: {company_name}
-URL: {url}
-
-VISUAL ASSESSMENT CRITERIA:
-1. Government Visual Violations:
-   - Crown logos, royal arms, or government emblems
-   - Official government color schemes (green/white gov.uk style)
-   - Government-style headers, footers, or navigation
-
-2. HMRC Visual Violations:
-   - HMRC logos, branding, or visual identity
-   - Official tax authority styling or imagery
-   - HMRC-like forms or document layouts
-
-3. Design Quality Issues:
-   - Unprofessional appearance or layout problems
-   - Broken images, misaligned elements, or poor typography
-   - Suspicious or misleading visual elements
-
-4. Trust Indicators:
-   - Professional design and branding consistency
-   - Clear company identification and contact visibility
-   - Appropriate use of security badges or certifications
-
-INSTRUCTIONS:
-Provide your assessment in this exact JSON format:
-{{
-    "visual_govt_violations": {{
-        "found": true/false,
-        "severity": "none/low/medium/high",
-        "details": "specific visual violations or 'None detected'"
-    }},
-    "visual_hmrc_violations": {{
-        "found": true/false,
-        "severity": "none/low/medium/high",
-        "details": "specific visual violations or 'None detected'"
-    }},
-    "design_quality": {{
-        "professional": true/false,
-        "issues": "design problems found or 'None detected'"
-    }},
-    "trust_indicators": {{
-        "present": true/false,
-        "details": "trust elements observed or 'Limited indicators'"
-    }},
-    "visual_risk": "none/low/medium/high",
-    "visual_summary": "Brief visual assessment summary"
-}}
-
-Respond ONLY with valid JSON - no other text.
-"""
-        return prompt
-    
-    def create_short_visual_prompt(self, company_name: str, url: str) -> str:
-        """Create a shorter visual analysis prompt for context-limited scenarios."""
-        prompt = f"""
-Analyze this website screenshot for trademark violations and design quality.
-
-COMPANY: {company_name}
-URL: {url}
-
-Assess for:
-1. Government/HMRC visual violations (logos, branding, color schemes)
-2. Overall design quality and professionalism
-3. Trust indicators and legitimacy concerns
-
-JSON format:
-{{
-    "visual_govt_violations": {{"found": true/false, "severity": "none/low/medium/high", "details": "brief details"}},
-    "visual_hmrc_violations": {{"found": true/false, "severity": "none/low/medium/high", "details": "brief details"}},
-    "design_quality": {{"professional": true/false, "issues": "main issues or none"}},
-    "trust_indicators": {{"present": true/false, "details": "key indicators"}},
-    "visual_risk": "none/low/medium/high",
-    "visual_summary": "One sentence summary"
-}}
-
-Respond ONLY with valid JSON.
-"""
-        return prompt
-    
-    async def call_agent(self, prompt: str, image_data: Optional[bytes] = None) -> Dict:
-        """Call Agno agent with prompt and optional image."""
-        try:
-            if image_data:
-                # Vision request with image
-                image_url = self.create_image_message(image_data)
-                logger.info("sending_image_to_agent", 
-                           image_size=len(image_data), 
-                           image_url_preview=image_url[:100] + "..." if len(image_url) > 100 else image_url)
-                
-                # Create message with both text and image - try Agno's expected format
-                messages = [
-                    {
-                        "role": "user", 
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": image_url}}
-                        ]
-                    }
-                ]
-                
-                # Run agent with image context
-                response = await self.agent.arun(input=messages)
-            else:
-                # Text-only request
-                response = await self.agent.arun(input=prompt)
-            
-            # Response should be a string, try to parse as JSON
-            if hasattr(response, 'content'):
+            # Parse response
+            if hasattr(response, "content"):
                 content = response.content
             else:
                 content = str(response)
-            
-            # Try to parse as JSON
+
+            # Try to parse JSON response
             try:
-                return json.loads(content)
-            except json.JSONDecodeError as e:
-                # Try to extract JSON from markdown code blocks
+                results = json.loads(content)
+            except json.JSONDecodeError:
+                # Try to extract JSON from markdown
                 import re
-                json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.DOTALL)
+
+                json_match = re.search(r"```(?:json)?\s*(.*?)\s*```", content, re.DOTALL)
                 if json_match:
-                    try:
-                        json_content = json_match.group(1).strip()
-                        logger.info("extracted_json_from_markdown", json_preview=json_content[:200])
-                        return json.loads(json_content)
-                    except json.JSONDecodeError as e2:
-                        logger.warning("markdown_json_parse_failed", 
-                                     extracted_content=json_content[:300],
-                                     parse_error=str(e2))
-                
-                logger.warning("json_parse_failed", 
-                             raw_response_preview=content[:500] + "..." if len(content) > 500 else content,
-                             parse_error=str(e))
-                return {"raw_response": content, "parse_error": f"Failed to parse JSON: {str(e)}"}
-                
-        except Exception as e:
-            logger.error("agent_call_failed", error=str(e))
-            return {"error": str(e)}
-    
-    async def analyze_record(self, record: Dict) -> Dict:
-        """Analyze a single database record with separate image and content analysis."""
-        company_name = record['company_name']
-        url = record['original_url']
-        record_id = record['id']
-        
-        logger.info("analyzing_record", id=record_id, company=company_name, url=url)
-        
-        results = {
-            'id': record_id,
-            'company_name': company_name,
-            'url': url,
-            'final_url': record.get('final_url'),
-            'redirected': record.get('redirected', False),
-            'load_time_ms': record.get('load_time_ms'),
-            'analysis_timestamp': datetime.now().isoformat(),
-        }
-        
-        # Load content from file paths
-        screenshot_data = self.load_screenshot_from_path(record.get('screenshot_path')) if record.get('screenshot_path') else None
-        html_content = self.load_html_from_path(record.get('html_path')) if record.get('html_path') else None
-        
-        # Run both analyses concurrently for better performance
-        visual_task = self.analyze_image_separately(record, screenshot_data) if screenshot_data else None
-        content_task = self.analyze_content_separately(record, html_content) if html_content else None
-        
-        # Wait for both to complete
-        if visual_task and content_task:
-            visual_results, content_results = await asyncio.gather(visual_task, content_task, return_exceptions=True)
-        elif visual_task:
-            visual_results = await visual_task
-            content_results = {}
-        elif content_task:
-            content_results = await content_task
-            visual_results = {}
-        else:
-            visual_results = {}
-            content_results = {}
-        
-        # Handle exceptions
-        if isinstance(visual_results, Exception):
-            logger.error("visual_analysis_failed", id=record_id, error=str(visual_results))
-            visual_results = {"error": str(visual_results)}
-            
-        if isinstance(content_results, Exception):
-            logger.error("content_analysis_failed", id=record_id, error=str(content_results))
-            content_results = {"error": str(content_results)}
-        
-        # Merge results
-        merged_results = self.merge_analysis_results(visual_results, content_results)
-        results.update(merged_results)
-        
-        return results
-    
-    async def analyze_image_separately(self, record: Dict, screenshot_data: bytes) -> Dict:
-        """Analyze image/screenshot separately with focused visual prompt."""
-        company_name = record['company_name']
-        url = record['original_url']
-        record_id = record['id']
-        
-        try:
-            # Optimize image for single-purpose analysis
-            image_data = self.resize_image_if_needed(screenshot_data, max_dimension=768, quality=75)
-            
-            # Create focused image-only prompt (much shorter)
-            image_prompt = f"""Analyze this website screenshot for visual compliance issues:
-
-COMPANY: {company_name}
-URL: {url}
-
-Assess for:
-1. Making Tax Digital relevance (does this appear to be MTD/tax software/accounting services?)
-2. UK Government visual violations (Crown logos, gov.uk styling, official colors)
-3. HMRC visual violations (HMRC branding, tax authority styling)  
-4. Design professionalism and trust indicators
-
-JSON response only:
-{{
-    "mtd_relevant": {{"relevant": true/false, "confidence": "high/medium/low", "reasoning": "brief explanation"}},
-    "govt_visual_violations": {{"found": true/false, "details": "brief description"}},
-    "hmrc_visual_violations": {{"found": true/false, "details": "brief description"}},
-    "design_quality": {{"professional": true/false, "issues": "main issues"}},
-    "visual_risk_level": "none/low/medium/high",
-    "summary": "One sentence visual assessment"
-}}"""
-
-            # Much smaller context - should almost always fit
-            if self.should_split_analysis(image_prompt, image_data):
-                # Try even more aggressive compression if needed
-                compressed_image = self.compress_image_aggressively(image_data, target_tokens=30000)
-                if self.should_split_analysis(image_prompt, compressed_image):
-                    if self.skip_large_images:
-                        return {"skipped": True, "reason": "Image too large"}
-                    else:
-                        # Ultra-minimal prompt as last resort
-                        ultra_minimal = f"Analyze screenshot for government trademark violations. Company: {company_name}. Brief JSON response."
-                        response = await self.call_agent(ultra_minimal, compressed_image)
+                    results = json.loads(json_match.group(1).strip())
                 else:
-                    response = await self.call_agent(image_prompt, compressed_image)
-            else:
-                response = await self.call_agent(image_prompt, image_data)
-            
-            logger.info("image_analysis_completed", id=record_id, response_keys=list(response.keys()) if isinstance(response, dict) else "non_dict_response")
-            if isinstance(response, dict) and any(key in response for key in ['govt_visual_violations', 'hmrc_visual_violations']):
-                logger.info("visual_violations_detected", id=record_id, 
-                          govt_found=response.get('govt_visual_violations', {}).get('found'),
-                          hmrc_found=response.get('hmrc_visual_violations', {}).get('found'))
-            return response
-            
+                    logger.error("json_parse_failed", content=content[:500])
+                    return
+
+            # Save results to database
+            await self.db_tools.save_ac_results(job_id, website_url, results, self.model_id)
+
+            logger.info("website_analysis_completed", job_id=job_id, url=website_url)
+
         except Exception as e:
-            logger.error("image_analysis_failed", id=record_id, error=str(e))
-            return {"error": str(e)}
-    
-    async def analyze_content_separately(self, record: Dict, html_content: str) -> Dict:
-        """Analyze HTML content separately with focused content prompt."""
-        company_name = record['company_name']
-        url = record['original_url']
-        record_id = record['id']
-        
-        try:
-            # Extract only the most relevant HTML content
-            relevant_content = self.extract_relevant_html_content(html_content)
-            
-            # Create focused content-only prompt (no image context needed)
-            content_prompt = f"""Analyze this website content for compliance issues:
+            logger.error("analysis_failed", job_id=job_id, url=website_url, error=str(e))
+            raise
 
-COMPANY: {company_name}
-URL: {url}
 
-CONTENT:
-{relevant_content}
+class ReportingAgent:
+    """Generates CSV reports from MTD compliance results."""
 
-Assess for:
-1. Making Tax Digital relevance (MTD software, tax services, accounting tools, VAT/bookkeeping)
-2. UK Government trademark violations (unauthorized gov terms, Crown references)
-3. HMRC trademark violations (unauthorized HMRC branding, misleading tax authority claims)
-4. Business legitimacy (contact info, professional content, required legal pages)
-5. Tax service compliance (appropriate disclaimers, qualification statements)
+    def __init__(self, db_tools: MTDDatabaseTools):
+        self.db_tools = db_tools
 
-JSON response only:
-{{
-    "mtd_relevant": {{"relevant": true/false, "confidence": "high/medium/low", "reasoning": "brief explanation"}},
-    "govt_content_violations": {{"found": true/false, "details": "brief description"}},
-    "hmrc_content_violations": {{"found": true/false, "details": "brief description"}},
-    "legitimacy_concerns": {{"found": true/false, "details": "main concerns"}},
-    "tax_compliance": {{"compliant": true/false, "details": "compliance issues"}},
-    "content_risk_level": "none/low/medium/high",
-    "summary": "One sentence content assessment"
-}}"""
+    async def generate_report(self, job_id: str) -> str:
+        """Generate CSV report for a job_id from normalized tables."""
+        logger.info("generating_report", job_id=job_id)
 
-            # Text-only analysis should be much smaller
-            if self.should_split_analysis(content_prompt):
-                # Further reduce content if still too large
-                shorter_content = relevant_content[:1500]  # Even more aggressive
-                content_prompt = content_prompt.replace(relevant_content, shorter_content)
-            
-            response = await self.call_agent(content_prompt)
-            logger.info("content_analysis_completed", id=record_id)
-            return response
-            
-        except Exception as e:
-            logger.error("content_analysis_failed", id=record_id, error=str(e))
-            return {"error": str(e)}
-    
-    def merge_analysis_results(self, visual_results: Dict, content_results: Dict) -> Dict:
-        """Merge separate visual and content analysis into unified results for CSV."""
-        merged = {
-            'visual_analysis': visual_results,
-            'content_analysis': content_results
-        }
-        
-        # Create unified risk assessment
-        visual_risk = visual_results.get('visual_risk_level', 'none')
-        content_risk = content_results.get('content_risk_level', 'none')
-        
-        # Determine overall risk (take the higher of the two)
-        risk_levels = {'none': 0, 'low': 1, 'medium': 2, 'high': 3}
-        overall_risk_level = max(
-            risk_levels.get(visual_risk, 0),
-            risk_levels.get(content_risk, 0)
+        # Query both summary and detailed results
+        summary_results = await self.db_tools.query_summary_by_job_id(job_id)
+        detailed_results = await self.db_tools.query_detailed_results_by_job_id(job_id)
+
+        if not summary_results:
+            logger.warning("no_results_found", job_id=job_id)
+            return None
+
+        # Organize detailed results by website_url
+        detailed_by_url = {}
+        for detail in detailed_results:
+            url = detail["website_url"]
+            if url not in detailed_by_url:
+                detailed_by_url[url] = {}
+            detailed_by_url[url][detail["ac_number"]] = detail
+
+        # Generate CSV report
+        output_file = Path(
+            f"./mtd_compliance_report_{job_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         )
-        overall_risk = [k for k, v in risk_levels.items() if v == overall_risk_level][0]
-        
-        merged['overall_risk_assessment'] = overall_risk
-        merged['analysis_method'] = 'separate_prompts'
-        
-        return merged
-    
-    async def mark_record_processed(self, record_id: int) -> None:
-        """Mark a record as processed in the database."""
-        conn = await asyncpg.connect(**self.db_config)
-        
-        try:
-            await conn.execute(
-                f"UPDATE {self.table_name} SET analysis_status = 'completed' WHERE id = $1",
-                record_id
-            )
-            logger.info("record_marked_completed", id=record_id, table=self.table_name)
-        finally:
-            await conn.close()
-    
-    def save_results_to_csv(self, results: List[Dict], output_file: Path) -> None:
-        """Save analysis results to CSV file."""
-        if not results:
-            logger.warning("no_results_to_save")
-            return
-        
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        
-        with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+
+        with open(output_file, "w", newline="", encoding="utf-8") as csvfile:
             fieldnames = [
-                'id', 'company_name', 'url', 'final_url', 'redirected', 'load_time_ms',
-                'analysis_timestamp',
-                # MTD relevance assessment
-                'mtd_relevant_visual', 'mtd_confidence_visual', 'mtd_reasoning_visual',
-                'mtd_relevant_content', 'mtd_confidence_content', 'mtd_reasoning_content',
-                # Visual analysis fields
-                'visual_govt_violations_found', 'visual_govt_violations_severity', 'visual_govt_violations_details',
-                'visual_hmrc_violations_found', 'visual_hmrc_violations_severity', 'visual_hmrc_violations_details',
-                'design_professional', 'design_issues',
-                'trust_indicators_present', 'trust_indicators_details',
-                'visual_risk', 'visual_summary',
-                # Content analysis fields
-                'uk_govt_violations_found', 'uk_govt_violations_severity', 'uk_govt_violations_details',
-                'hmrc_violations_found', 'hmrc_violations_severity', 'hmrc_violations_details',
-                'legitimacy_concerns_found', 'legitimacy_concerns_severity', 'legitimacy_concerns_details',
-                'tax_compliance_compliant', 'tax_compliance_severity', 'tax_compliance_details',
-                'overall_risk', 'content_summary',
-                # Error tracking
-                'visual_analysis_error', 'content_analysis_error'
+                "job_id",
+                "website_url",
+                "overall_status",
+                "total_passed",
+                "total_failed",
+                "total_suspect",
+                "ac1_result",
+                "ac1_confidence",
+                "ac1_explanation",
+                "ac2_result",
+                "ac2_confidence",
+                "ac2_explanation",
+                "ac3_result",
+                "ac3_confidence",
+                "ac3_explanation",
+                "ac4_result",
+                "ac4_confidence",
+                "ac4_explanation",
+                "ac5_result",
+                "ac5_confidence",
+                "ac5_explanation",
+                "ac6_result",
+                "ac6_confidence",
+                "ac6_explanation",
+                "ac7_result",
+                "ac7_confidence",
+                "ac7_explanation",
+                "ac8_result",
+                "ac8_confidence",
+                "ac8_explanation",
+                "ac9_result",
+                "ac9_confidence",
+                "ac9_explanation",
+                "ac10_result",
+                "ac10_confidence",
+                "ac10_explanation",
+                "analysis_timestamp",
+                "ai_model_used",
             ]
-            
+
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
-            
-            for result in results:
-                # Flatten the nested results into CSV row
+
+            for summary in summary_results:
+                website_url = summary["website_url"]
+                website_details = detailed_by_url.get(website_url, {})
+
                 row = {
-                    'id': result['id'],
-                    'company_name': result['company_name'],
-                    'url': result['url'],
-                    'final_url': result.get('final_url', ''),
-                    'redirected': result.get('redirected', False),
-                    'load_time_ms': result.get('load_time_ms', ''),
-                    'analysis_timestamp': result['analysis_timestamp'],
+                    "job_id": summary["job_id"],
+                    "website_url": website_url,
+                    "overall_status": summary["overall_status"],
+                    "total_passed": summary["total_passed"],
+                    "total_failed": summary["total_failed"],
+                    "total_suspect": summary["total_suspect"],
+                    "analysis_timestamp": summary["analysis_timestamp"],
+                    "ai_model_used": summary["ai_model_used"],
                 }
-                
-                # Visual analysis results
-                visual = result.get('visual_analysis', {})
-                if 'error' in visual:
-                    row['visual_analysis_error'] = visual['error']
-                    # Add default MTD relevance if visual analysis failed
-                    row.update({
-                        'mtd_relevant_visual': 'Unknown',
-                        'mtd_confidence_visual': 'none',
-                        'mtd_reasoning_visual': 'Visual analysis failed',
-                    })
-                else:
-                    row.update({
-                        'mtd_relevant_visual': visual.get('mtd_relevant', {}).get('relevant', 'Unknown'),
-                        'mtd_confidence_visual': visual.get('mtd_relevant', {}).get('confidence', 'low'),
-                        'mtd_reasoning_visual': visual.get('mtd_relevant', {}).get('reasoning', 'No assessment available'),
-                        'visual_govt_violations_found': visual.get('govt_visual_violations', {}).get('found', False),
-                        'visual_govt_violations_severity': visual.get('govt_visual_violations', {}).get('severity', 'none'),
-                        'visual_govt_violations_details': visual.get('govt_visual_violations', {}).get('details', 'No violations detected'),
-                        'visual_hmrc_violations_found': visual.get('hmrc_visual_violations', {}).get('found', False),
-                        'visual_hmrc_violations_severity': visual.get('hmrc_visual_violations', {}).get('severity', 'none'),
-                        'visual_hmrc_violations_details': visual.get('hmrc_visual_violations', {}).get('details', 'No violations detected'),
-                        'design_professional': visual.get('design_quality', {}).get('professional', True),
-                        'design_issues': visual.get('design_quality', {}).get('issues', 'No issues detected'),
-                        'trust_indicators_present': visual.get('trust_indicators', {}).get('present', True),
-                        'trust_indicators_details': visual.get('trust_indicators', {}).get('details', 'Standard indicators present'),
-                        'visual_risk': visual.get('visual_risk_level', 'none'),
-                        'visual_summary': visual.get('summary', 'Visual analysis completed - no issues detected'),
-                    })
-                
-                # Content analysis results
-                content = result.get('content_analysis', {})
-                if 'error' in content:
-                    row['content_analysis_error'] = content['error']
-                    # Add default MTD relevance if content analysis failed
-                    row.update({
-                        'mtd_relevant_content': 'Unknown',
-                        'mtd_confidence_content': 'none',
-                        'mtd_reasoning_content': 'Content analysis failed',
-                    })
-                else:
-                    row.update({
-                        'mtd_relevant_content': content.get('mtd_relevant', {}).get('relevant', 'Unknown'),
-                        'mtd_confidence_content': content.get('mtd_relevant', {}).get('confidence', 'low'),
-                        'mtd_reasoning_content': content.get('mtd_relevant', {}).get('reasoning', 'No assessment available'),
-                        'uk_govt_violations_found': content.get('govt_content_violations', {}).get('found', False),
-                        'uk_govt_violations_severity': content.get('govt_content_violations', {}).get('severity', 'none'),
-                        'uk_govt_violations_details': content.get('govt_content_violations', {}).get('details', 'No violations detected'),
-                        'hmrc_violations_found': content.get('hmrc_content_violations', {}).get('found', False),
-                        'hmrc_violations_severity': content.get('hmrc_content_violations', {}).get('severity', 'none'),
-                        'hmrc_violations_details': content.get('hmrc_content_violations', {}).get('details', 'No violations detected'),
-                        'legitimacy_concerns_found': content.get('legitimacy_concerns', {}).get('found', False),
-                        'legitimacy_concerns_severity': content.get('legitimacy_concerns', {}).get('severity', 'none'),
-                        'legitimacy_concerns_details': content.get('legitimacy_concerns', {}).get('details', 'No concerns identified'),
-                        'tax_compliance_compliant': content.get('tax_compliance', {}).get('compliant', True),
-                        'tax_compliance_severity': content.get('tax_compliance', {}).get('severity', 'none'),
-                        'tax_compliance_details': content.get('tax_compliance', {}).get('details', 'Compliant'),
-                        'overall_risk': content.get('content_risk_level', 'none'),
-                        'content_summary': content.get('summary', 'Content analysis completed - no issues detected'),
-                    })
-                
+
+                # Extract each AC result from normalized data
+                for ac_num in range(1, 11):
+                    ac_data = website_details.get(ac_num, {})
+
+                    row[f"ac{ac_num}_result"] = ac_data.get("ac_result", "")
+                    row[f"ac{ac_num}_confidence"] = ac_data.get("ac_confidence", "")
+                    row[f"ac{ac_num}_explanation"] = ac_data.get("ac_explanation", "")
+
                 writer.writerow(row)
-        
-        logger.info("results_saved_to_csv", file=str(output_file), count=len(results))
-    
-    async def run_analysis(self, limit: Optional[int] = None, output_file: Optional[Path] = None, mark_completed: bool = True) -> List[Dict]:
-        """Run the complete analysis workflow."""
-        logger.info("starting_site_analysis", limit=limit, model_id=self.model.id)
-        
-        # Get active records
-        records = await self.get_active_records(limit)
-        
-        if not records:
-            logger.info("no_active_records_found")
-            return []
-        
-        # Analyze each record
-        results = []
-        
-        for i, record in enumerate(records, 1):
-            logger.info("processing_record", current=i, total=len(records), 
-                       id=record['id'], company=record['company_name'])
-            
+
+        logger.info(
+            "report_generated", job_id=job_id, file=str(output_file), records=len(summary_results)
+        )
+        return str(output_file)
+
+
+class MTDSiteChecker:
+    """Main MTD Site Checker with 3-agent architecture."""
+
+    def __init__(
+        self,
+        model_id: str,
+        api_key: str,
+        base_url: str,
+        source_table: str = "preprocessing_results",
+    ):
+        self.model_id = model_id
+        self.source_table = source_table
+
+        # Database configuration
+        self.db_config = {
+            "host": os.getenv("POSTGRES_HOST", "localhost"),
+            "port": int(os.getenv("POSTGRES_PORT", "5432")),
+            "database": os.getenv("POSTGRES_DB", "site_analysis"),
+            "user": os.getenv("POSTGRES_USER", "postgres"),
+            "password": os.getenv("POSTGRES_PASSWORD", ""),
+        }
+
+        # Initialize Agno model and agent
+        self.model = OpenAILike(id=model_id, api_key=api_key, base_url=base_url)
+
+        self.agent = Agent(model=self.model)
+
+        # Initialize tools and agents
+        self.db_tools = MTDDatabaseTools(self.db_config, source_table)
+        self.image_agent = SiteImageAnalysisAgent(self.agent, self.db_tools, model_id)
+        self.reporting_agent = ReportingAgent(self.db_tools)
+        self.coordinator = CoordinatorAgent(self.db_tools, self.image_agent, self.reporting_agent)
+
+        logger.info("mtd_checker_initialized", model_id=model_id, source_table=source_table)
+
+    async def setup_database(self):
+        """Ensure database tables exist."""
+        await self.db_tools.ensure_tables_exist()
+
+    async def run_mtd_analysis(self, job_id: str, website_urls: Optional[List[str]] = None) -> str:
+        """Run MTD compliance analysis."""
+        await self.setup_database()
+
+        if website_urls is None:
+            # Query all websites from source table for this job_id
+            conn = await self.db_tools.create_connection()
             try:
-                result = await self.analyze_record(record)
-                results.append(result)
-                
-                # Mark as processed if requested
-                if mark_completed:
-                    await self.mark_record_processed(record['id'])
-                
-                # Add small delay to be nice to AI APIs
-                await asyncio.sleep(1)
-                
-            except Exception as e:
-                logger.error("record_analysis_failed", id=record['id'], error=str(e))
-                # Continue with next record
-                continue
-        
-        # Save results to CSV
-        if output_file:
-            self.save_results_to_csv(results, output_file)
-        
-        logger.info("analysis_completed", total_records=len(records), successful=len(results))
-        return results
+                rows = await conn.fetch(
+                    f"""
+                    SELECT DISTINCT original_url FROM {self.source_table} 
+                    WHERE job_id = $1 AND is_active = TRUE
+                """,
+                    job_id,
+                )
+                website_urls = [row["original_url"] for row in rows]
+            finally:
+                await conn.close()
+
+        if not website_urls:
+            logger.error("no_websites_found", job_id=job_id, table=self.source_table)
+            return None
+
+        logger.info(
+            "websites_found", job_id=job_id, count=len(website_urls), table=self.source_table
+        )
+
+        # Run coordinator
+        report_path = await self.coordinator.process_job(job_id, website_urls)
+        return report_path
+
 
 async def main():
     import argparse
-    
-    parser = argparse.ArgumentParser(description='Simple Site Compliance Checker - Proof of Concept')
-    parser.add_argument('--api-key', required=True, help='API key for the OpenAI-like model')
-    parser.add_argument('--base-url', required=True, help='Base URL for the OpenAI-like model endpoint')
-    parser.add_argument('--model-id', default='gpt-4o-mini', help='Model ID to use (default: gpt-4o-mini)')
-    parser.add_argument('--limit', type=int, help='Limit number of records to process')
-    parser.add_argument('--output', type=Path, default=Path('./results/compliance_analysis.csv'),
-                        help='Output CSV file path')
-    parser.add_argument('--dry-run', action='store_true',
-                        help='Run analysis without marking records as completed')
-    parser.add_argument('--skip-large-images', action='store_true',
-                        help='Skip image analysis if image is too large for context window')
-    parser.add_argument('--table', default='preprocessing_results',
-                        help='Database table name to process (default: preprocessing_results)')
-    parser.add_argument('--base-path', default='.',
-                        help='Base path for loading screenshot and HTML files (default: current directory)')
-    
+
+    parser = argparse.ArgumentParser(description="MTD Compliance Site Checker")
+    parser.add_argument("--api-key", required=True, help="API key for the OpenAI-like model")
+    parser.add_argument(
+        "--base-url", required=True, help="Base URL for the OpenAI-like model endpoint"
+    )
+    parser.add_argument(
+        "--model-id", default="gpt-4o-mini", help="Model ID to use (default: gpt-4o-mini)"
+    )
+    parser.add_argument(
+        "--job-id", help="Job ID for batch processing (auto-generated if not provided)"
+    )
+    parser.add_argument(
+        "--source-table", default="preprocessing_results", help="Source table name for images/data"
+    )
+    parser.add_argument(
+        "--urls", nargs="+", help="Website URLs to analyze (if not reading from database)"
+    )
+
     args = parser.parse_args()
-    
+
     # Set up logging
     structlog.configure(
-        processors=[
-            structlog.processors.TimeStamper(fmt="ISO"),
-            structlog.dev.ConsoleRenderer()
-        ],
+        processors=[structlog.processors.TimeStamper(fmt="ISO"), structlog.dev.ConsoleRenderer()],
         wrapper_class=structlog.make_filtering_bound_logger(20),
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
     )
-    
+
     try:
-        checker = SimpleSiteChecker(
+        checker = MTDSiteChecker(
             model_id=args.model_id,
             api_key=args.api_key,
             base_url=args.base_url,
-            skip_large_images=args.skip_large_images,
-            table_name=args.table,
-            base_path=args.base_path
+            source_table=args.source_table,
         )
-        
-        results = await checker.run_analysis(
-            limit=args.limit,
-            output_file=args.output,
-            mark_completed=not args.dry_run
-        )
-        
-        if results:
-            print(f"\n✅ Analysis completed successfully!")
-            print(f"📊 Processed {len(results)} records")
-            print(f"📄 Results saved to: {args.output}")
-            print(f"🎯 Records marked as completed: {not args.dry_run}")
+
+        # Generate job_id if not provided
+        job_id = args.job_id or str(uuid.uuid4())
+
+        # Run MTD analysis
+        report_path = await checker.run_mtd_analysis(job_id, args.urls)
+
+        if report_path:
+            print(f"\n🎯 MTD Compliance Analysis Completed!")
+            print(f"📊 Job ID: {job_id}")
+            print(f"📄 Report saved to: {report_path}")
+            print(f"🔗 Download link: file://{Path(report_path).absolute()}")
+            print(f"📋 Source table: {args.source_table}")
         else:
-            print("📭 No active records found to process")
-        
+            print("❌ Analysis failed or no data found")
+            return 1
+
         return 0
-        
+
     except Exception as e:
-        logger.error("analysis_failed", error=str(e))
+        logger.error("mtd_analysis_failed", error=str(e))
         return 1
+
 
 if __name__ == "__main__":
     exit(asyncio.run(main()))
