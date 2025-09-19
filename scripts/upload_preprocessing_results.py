@@ -57,6 +57,9 @@ class PreprocessingResultsUploader:
         ('bot_protection_type', 'TEXT'),
         ('bot_indicators', 'JSONB'),  # Store as JSONB for better querying
         ('bot_confidence', 'REAL'),
+        # Processing workflow columns
+        ('is_active', 'BOOLEAN'),
+        ('analysis_status', 'TEXT'),
     ]
     
     def __init__(self, table_name: str = 'preprocessing_results'):
@@ -163,6 +166,10 @@ class PreprocessingResultsUploader:
         # Convert indicators list to JSON string for JSONB storage
         indicators = bot_protection.get('indicators', [])
         flattened['bot_indicators'] = json.dumps(indicators)
+        
+        # Set default workflow status for new records
+        flattened['is_active'] = True
+        flattened['analysis_status'] = 'pending'
         
         return flattened
     
