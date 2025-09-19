@@ -28,8 +28,9 @@ logger = structlog.get_logger()
 class SimpleSiteChecker:
     """Simplified site compliance checker using Agno agents."""
     
-    def __init__(self, model_id: str = "gpt-4o-mini", api_key: str = "", base_url: str = "", skip_large_images: bool = False, table_name: str = "preprocessing_results"):
+    def __init__(self, model_id: str = "gpt-4o-mini", api_key: str = "", base_url: str = "", skip_large_images: bool = False, table_name: str = "preprocessing_results", base_path: str = "."):
         self.table_name = table_name
+        self.base_path = Path(base_path)
         self.db_config = {
             'host': os.getenv('POSTGRES_HOST', 'localhost'),
             'port': int(os.getenv('POSTGRES_PORT', '5432')),
@@ -85,12 +86,16 @@ class SimpleSiteChecker:
             return None
             
         try:
+            # Combine with base_path if path is relative
             path = Path(screenshot_path)
+            if not path.is_absolute():
+                path = self.base_path / path
+                
             if path.exists():
                 with open(path, 'rb') as f:
                     return f.read()
             else:
-                logger.warning("screenshot_file_not_found", path=screenshot_path)
+                logger.warning("screenshot_file_not_found", path=str(path))
                 return None
         except Exception as e:
             logger.error("screenshot_load_failed", path=screenshot_path, error=str(e))
@@ -102,12 +107,16 @@ class SimpleSiteChecker:
             return None
             
         try:
+            # Combine with base_path if path is relative
             path = Path(html_path)
+            if not path.is_absolute():
+                path = self.base_path / path
+                
             if path.exists():
                 with open(path, 'r', encoding='utf-8') as f:
                     return f.read()
             else:
-                logger.warning("html_file_not_found", path=html_path)
+                logger.warning("html_file_not_found", path=str(path))
                 return None
         except Exception as e:
             logger.error("html_load_failed", path=html_path, error=str(e))
@@ -514,10 +523,10 @@ Respond ONLY with valid JSON.
                 ]
                 
                 # Run agent with image context
-                response = await self.agent.arun(messages=messages)
+                response = await self.agent.arun(input=messages)
             else:
                 # Text-only request
-                response = await self.agent.arun(prompt)
+                response = await self.agent.arun(input=prompt)
             
             # Response should be a string, try to parse as JSON
             if hasattr(response, 'content'):
@@ -919,6 +928,8 @@ async def main():
                         help='Skip image analysis if image is too large for context window')
     parser.add_argument('--table', default='preprocessing_results',
                         help='Database table name to process (default: preprocessing_results)')
+    parser.add_argument('--base-path', default='.',
+                        help='Base path for loading screenshot and HTML files (default: current directory)')
     
     args = parser.parse_args()
     
@@ -939,7 +950,8 @@ async def main():
             api_key=args.api_key,
             base_url=args.base_url,
             skip_large_images=args.skip_large_images,
-            table_name=args.table
+            table_name=args.table,
+            base_path=args.base_path
         )
         
         results = await checker.run_analysis(
