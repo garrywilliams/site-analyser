@@ -93,6 +93,7 @@ class PreprocessingResultsUploader:
             Flattened dictionary ready for database insert
         """
         from datetime import datetime, timezone
+        import json
         
         flattened = {}
         
@@ -161,11 +162,7 @@ class PreprocessingResultsUploader:
         
         # Convert indicators list to JSON string for JSONB storage
         indicators = bot_protection.get('indicators', [])
-        if indicators:
-            import json
-            flattened['bot_indicators'] = json.dumps(indicators)
-        else:
-            flattened['bot_indicators'] = json.dumps([])
+        flattened['bot_indicators'] = json.dumps(indicators)
         
         return flattened
     
