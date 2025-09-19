@@ -159,8 +159,13 @@ class PreprocessingResultsUploader:
         flattened['bot_protection_type'] = bot_protection.get('protection_type')
         flattened['bot_confidence'] = bot_protection.get('confidence')
         
-        # Keep indicators as list for JSONB storage
-        flattened['bot_indicators'] = bot_protection.get('indicators', [])
+        # Convert indicators list to JSON string for JSONB storage
+        indicators = bot_protection.get('indicators', [])
+        if indicators:
+            import json
+            flattened['bot_indicators'] = json.dumps(indicators)
+        else:
+            flattened['bot_indicators'] = json.dumps([])
         
         return flattened
     
