@@ -63,11 +63,11 @@ class PreprocessingResultsUploader:
         """Initialize uploader with database config from environment."""
         self.table_name = table_name
         self.db_config = {
-            'host': os.getenv('DB_HOST', 'localhost'),
-            'port': int(os.getenv('DB_PORT', '5432')),
-            'database': os.getenv('DB_NAME', 'site_analysis'),
-            'user': os.getenv('DB_USER', 'postgres'),
-            'password': os.getenv('DB_PASSWORD', ''),
+            'host': os.getenv('POSTGRES_HOST', 'localhost'),
+            'port': int(os.getenv('POSTGRES_PORT', '5432')),
+            'database': os.getenv('POSTGRES_DB', 'site_analysis'),
+            'user': os.getenv('POSTGRES_USER', 'postgres'),
+            'password': os.getenv('POSTGRES_PASSWORD', ''),
         }
     
     async def create_connection(self) -> asyncpg.Connection:
@@ -92,6 +92,8 @@ class PreprocessingResultsUploader:
         Returns:
             Flattened dictionary ready for database insert
         """
+        from datetime import datetime
+        
         flattened = {}
         
         # Direct fields
@@ -99,11 +101,22 @@ class PreprocessingResultsUploader:
             'job_id', 'original_url', 'final_url', 'domain', 'company_name',
             'html_path', 'html_size', 'screenshot_path', 'screenshot_hash', 
             'load_time_ms', 'viewport_size', 'redirected', 'status', 
-            'error_message', 'timestamp'
+            'error_message'
         ]
         
         for field in direct_fields:
             flattened[field] = result.get(field)
+        
+        # Handle timestamp conversion
+        timestamp_str = result.get('timestamp')
+        if timestamp_str:
+            try:
+                # Parse ISO format timestamp string to datetime object
+                flattened['timestamp'] = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            except (ValueError, AttributeError):
+                flattened['timestamp'] = None
+        else:
+            flattened['timestamp'] = None
         
         # SSL info (ssl_info.* -> ssl_*)
         ssl_info = result.get('ssl_info', {})
@@ -111,9 +124,18 @@ class PreprocessingResultsUploader:
         flattened['ssl_is_valid'] = ssl_info.get('is_valid')
         flattened['ssl_issuer'] = ssl_info.get('issuer')
         flattened['ssl_subject'] = ssl_info.get('subject')
-        flattened['ssl_expires_date'] = ssl_info.get('expires_date')
         flattened['ssl_days_until_expiry'] = ssl_info.get('days_until_expiry')
         flattened['ssl_certificate_error'] = ssl_info.get('certificate_error')
+        
+        # Handle SSL expires_date conversion
+        ssl_expires_str = ssl_info.get('expires_date')
+        if ssl_expires_str:
+            try:
+                flattened['ssl_expires_date'] = datetime.fromisoformat(ssl_expires_str.replace('Z', '+00:00'))
+            except (ValueError, AttributeError):
+                flattened['ssl_expires_date'] = None
+        else:
+            flattened['ssl_expires_date'] = None
         
         # Bot protection (bot_protection.* -> bot_*)
         bot_protection = result.get('bot_protection', {})
@@ -255,13 +277,13 @@ async def main():
     """Main function."""
     parser = argparse.ArgumentParser(
         description='Upload preprocessing results to PostgreSQL database',
-        epilogue="""
+        epilog="""
 Environment Variables Required:
-  DB_HOST     - Database host (default: localhost)
-  DB_PORT     - Database port (default: 5432)  
-  DB_NAME     - Database name (default: site_analysis)
-  DB_USER     - Database user (default: postgres)
-  DB_PASSWORD - Database password (required)
+  POSTGRES_HOST     - Database host (default: localhost)
+  POSTGRES_PORT     - Database port (default: 5432)  
+  POSTGRES_DB       - Database name (default: site_analysis)
+  POSTGRES_USER     - Database user (default: postgres)
+  POSTGRES_PASSWORD - Database password (required)
 
 Example:
   python scripts/upload_preprocessing_results.py results.json --preview
@@ -281,8 +303,8 @@ Example:
     args = parser.parse_args()
     
     # Check required environment variables
-    if not os.getenv('DB_PASSWORD') and not (args.preview and not args.dry_run):
-        print("❌ Error: DB_PASSWORD environment variable is required")
+    if not os.getenv('POSTGRES_PASSWORD') and not (args.preview and not args.dry_run):
+        print("❌ Error: POSTGRES_PASSWORD environment variable is required")
         print("Set it in your .env file or environment")
         sys.exit(1)
     
