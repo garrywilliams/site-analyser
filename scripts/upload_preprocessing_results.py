@@ -63,9 +63,10 @@ class PreprocessingResultsUploader:
         ('analysis_status', 'TEXT'),
     ]
     
-    def __init__(self, table_name: str = 'preprocessing_results'):
+    def __init__(self, table_name: str = 'preprocessing_results', base_path: str = '.'):
         """Initialize uploader with database config from environment."""
         self.table_name = table_name
+        self.base_path = Path(base_path)
         self.db_config = {
             'host': os.getenv('POSTGRES_HOST', 'localhost'),
             'port': int(os.getenv('POSTGRES_PORT', '5432')),
@@ -117,12 +118,15 @@ class PreprocessingResultsUploader:
         if screenshot_path_str:
             try:
                 screenshot_path = Path(screenshot_path_str)
+                if not screenshot_path.is_absolute():
+                    screenshot_path = self.base_path / screenshot_path
+                
                 if screenshot_path.exists():
                     with open(screenshot_path, 'rb') as f:
                         flattened['screenshot_data'] = f.read()
-                    logger.debug("screenshot_loaded", path=screenshot_path_str, size=len(flattened['screenshot_data']))
+                    logger.debug("screenshot_loaded", path=str(screenshot_path), size=len(flattened['screenshot_data']))
                 else:
-                    logger.warning("screenshot_not_found", path=screenshot_path_str)
+                    logger.warning("screenshot_not_found", path=str(screenshot_path))
                     flattened['screenshot_data'] = None
             except Exception as e:
                 logger.error("screenshot_load_failed", path=screenshot_path_str, error=str(e))
@@ -297,9 +301,9 @@ def load_results_from_json(json_file_path: Path) -> List[Dict[str, Any]]:
         raise
 
 
-def preview_flattened_data(results: List[Dict[str, Any]], limit: int = 3):
+def preview_flattened_data(results: List[Dict[str, Any]], base_path: str = '.', limit: int = 3):
     """Preview what the flattened data will look like."""
-    uploader = PreprocessingResultsUploader()
+    uploader = PreprocessingResultsUploader(base_path=base_path)
     
     print(f"\n📊 Preview of flattened data (showing first {min(limit, len(results))} results):\n")
     
@@ -339,6 +343,8 @@ Example:
     parser.add_argument('json_file', help='Path to JSON results file from preprocessing')
     parser.add_argument('--table', default='preprocessing_results', 
                        help='Table name (default: preprocessing_results)')
+    parser.add_argument('--base-path', default='.', 
+                       help='Base path for loading image files from relative paths')
     parser.add_argument('--preview', action='store_true', 
                        help='Preview flattened data without uploading')
     parser.add_argument('--dry-run', action='store_true', 
@@ -368,11 +374,11 @@ Example:
     
     # Preview mode
     if args.preview:
-        preview_flattened_data(results)
+        preview_flattened_data(results, args.base_path)
         return
     
     # Create uploader
-    uploader = PreprocessingResultsUploader(args.table)
+    uploader = PreprocessingResultsUploader(args.table, args.base_path)
     
     # Dry run mode  
     if args.dry_run:
@@ -383,7 +389,7 @@ Example:
         print(f"  Table: {args.table}")
         print(f"\n📋 SQL Schema:")
         print(uploader.generate_create_table_sql())
-        preview_flattened_data(results, limit=2)
+        preview_flattened_data(results, args.base_path, limit=2)
         return
     
     # Actual upload
