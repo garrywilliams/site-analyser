@@ -124,14 +124,15 @@ class PreprocessingResultsUploader:
                 if screenshot_path.exists():
                     with open(screenshot_path, 'rb') as f:
                         flattened['screenshot_data'] = f.read()
-                    logger.debug("screenshot_loaded", path=str(screenshot_path), size=len(flattened['screenshot_data']))
+                    logger.info("screenshot_loaded", path=str(screenshot_path), size=len(flattened['screenshot_data']))
                 else:
-                    logger.warning("screenshot_not_found", path=str(screenshot_path))
+                    logger.error("screenshot_not_found", path=str(screenshot_path), exists=screenshot_path.exists())
                     flattened['screenshot_data'] = None
             except Exception as e:
                 logger.error("screenshot_load_failed", path=screenshot_path_str, error=str(e))
                 flattened['screenshot_data'] = None
         else:
+            logger.warning("no_screenshot_path", url=result.get('original_url'))
             flattened['screenshot_data'] = None
         
         # Handle timestamp conversion - convert to UTC and remove timezone info for PostgreSQL
@@ -266,6 +267,11 @@ ON CONFLICT (job_id, original_url) DO UPDATE SET
             for result in flattened_results:
                 row = [result.get(col_name) for col_name, _ in self.SCHEMA_COLUMNS]
                 rows_data.append(row)
+                # Debug: log if screenshot_data is present
+                if result.get('screenshot_data'):
+                    logger.info("inserting_with_screenshot", url=result.get('original_url'), size=len(result.get('screenshot_data')))
+                else:
+                    logger.warning("no_screenshot_data_for_insert", url=result.get('original_url'))
             
             await connection.executemany(insert_sql, rows_data)
             
