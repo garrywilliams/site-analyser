@@ -92,7 +92,7 @@ class PreprocessingResultsUploader:
         Returns:
             Flattened dictionary ready for database insert
         """
-        from datetime import datetime
+        from datetime import datetime, timezone
         
         flattened = {}
         
@@ -107,18 +107,21 @@ class PreprocessingResultsUploader:
         for field in direct_fields:
             flattened[field] = result.get(field)
         
-        # Handle timestamp conversion
+        # Handle timestamp conversion - convert to UTC and remove timezone info for PostgreSQL
         timestamp_str = result.get('timestamp')
         if timestamp_str:
             try:
                 # Parse ISO format timestamp string to datetime object
                 dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-                # Ensure timezone-aware (convert to UTC if naive)
-                if dt.tzinfo is None:
-                    from datetime import timezone
-                    dt = dt.replace(tzinfo=timezone.utc)
-                flattened['timestamp'] = dt
-            except (ValueError, AttributeError):
+                # Convert to UTC and make naive (PostgreSQL TIMESTAMP without timezone)
+                if dt.tzinfo is not None:
+                    dt_utc = dt.astimezone(timezone.utc).replace(tzinfo=None)
+                else:
+                    dt_utc = dt
+                flattened['timestamp'] = dt_utc
+                logger.debug("timestamp_parsed", original=timestamp_str, parsed=dt_utc)
+            except (ValueError, AttributeError) as e:
+                logger.error("timestamp_parse_failed", timestamp=timestamp_str, error=str(e))
                 flattened['timestamp'] = None
         else:
             flattened['timestamp'] = None
@@ -132,17 +135,20 @@ class PreprocessingResultsUploader:
         flattened['ssl_days_until_expiry'] = ssl_info.get('days_until_expiry')
         flattened['ssl_certificate_error'] = ssl_info.get('certificate_error')
         
-        # Handle SSL expires_date conversion
+        # Handle SSL expires_date conversion - convert to UTC and remove timezone info
         ssl_expires_str = ssl_info.get('expires_date')
         if ssl_expires_str:
             try:
                 dt = datetime.fromisoformat(ssl_expires_str.replace('Z', '+00:00'))
-                # Ensure timezone-aware (convert to UTC if naive)
-                if dt.tzinfo is None:
-                    from datetime import timezone
-                    dt = dt.replace(tzinfo=timezone.utc)
-                flattened['ssl_expires_date'] = dt
-            except (ValueError, AttributeError):
+                # Convert to UTC and make naive (PostgreSQL TIMESTAMP without timezone)
+                if dt.tzinfo is not None:
+                    dt_utc = dt.astimezone(timezone.utc).replace(tzinfo=None)
+                else:
+                    dt_utc = dt
+                flattened['ssl_expires_date'] = dt_utc
+                logger.debug("ssl_expires_parsed", original=ssl_expires_str, parsed=dt_utc)
+            except (ValueError, AttributeError) as e:
+                logger.error("ssl_expires_parse_failed", expires_date=ssl_expires_str, error=str(e))
                 flattened['ssl_expires_date'] = None
         else:
             flattened['ssl_expires_date'] = None
