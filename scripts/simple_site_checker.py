@@ -112,10 +112,10 @@ class MTDDatabaseTools:
             await conn.close()
 
     async def fetch_image_from_db(self, job_id: str, website_url: str) -> Optional[bytes]:
-        """Fetch screenshot image from source table."""
+        """Fetch screenshot image data from source table."""
         conn = await self.create_connection()
         try:
-            # Check if source table has screenshot_data column (BYTEA)
+            # Get screenshot_data BYTEA from source table
             result = await conn.fetchrow(
                 f"""
                 SELECT screenshot_data FROM {self.source_table} 
@@ -131,29 +131,6 @@ class MTDDatabaseTools:
                 )
                 return bytes(result["screenshot_data"])
             else:
-                # Fallback: try to load from screenshot_path
-                result = await conn.fetchrow(
-                    f"""
-                    SELECT screenshot_path FROM {self.source_table} 
-                    WHERE job_id = $1 AND original_url = $2 AND is_active = TRUE
-                """,
-                    job_id,
-                    website_url,
-                )
-
-                if result and result["screenshot_path"]:
-                    screenshot_path = Path(result["screenshot_path"])
-                    if screenshot_path.exists():
-                        with open(screenshot_path, "rb") as f:
-                            image_data = f.read()
-                        logger.info(
-                            "image_loaded_from_path",
-                            job_id=job_id,
-                            url=website_url,
-                            path=str(screenshot_path),
-                        )
-                        return image_data
-
                 logger.warning(
                     "image_not_found", job_id=job_id, url=website_url, table=self.source_table
                 )

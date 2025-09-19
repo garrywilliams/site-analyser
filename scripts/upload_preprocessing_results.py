@@ -37,6 +37,7 @@ class PreprocessingResultsUploader:
         ('html_path', 'TEXT'),
         ('html_size', 'INTEGER'),
         ('screenshot_path', 'TEXT'),
+        ('screenshot_data', 'BYTEA'),
         ('screenshot_hash', 'TEXT'),
         ('load_time_ms', 'INTEGER'),
         ('viewport_size', 'TEXT'),
@@ -110,6 +111,24 @@ class PreprocessingResultsUploader:
         
         for field in direct_fields:
             flattened[field] = result.get(field)
+        
+        # Load screenshot data from file
+        screenshot_path_str = result.get('screenshot_path')
+        if screenshot_path_str:
+            try:
+                screenshot_path = Path(screenshot_path_str)
+                if screenshot_path.exists():
+                    with open(screenshot_path, 'rb') as f:
+                        flattened['screenshot_data'] = f.read()
+                    logger.debug("screenshot_loaded", path=screenshot_path_str, size=len(flattened['screenshot_data']))
+                else:
+                    logger.warning("screenshot_not_found", path=screenshot_path_str)
+                    flattened['screenshot_data'] = None
+            except Exception as e:
+                logger.error("screenshot_load_failed", path=screenshot_path_str, error=str(e))
+                flattened['screenshot_data'] = None
+        else:
+            flattened['screenshot_data'] = None
         
         # Handle timestamp conversion - convert to UTC and remove timezone info for PostgreSQL
         timestamp_str = result.get('timestamp')
