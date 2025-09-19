@@ -112,7 +112,12 @@ class PreprocessingResultsUploader:
         if timestamp_str:
             try:
                 # Parse ISO format timestamp string to datetime object
-                flattened['timestamp'] = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                # Ensure timezone-aware (convert to UTC if naive)
+                if dt.tzinfo is None:
+                    from datetime import timezone
+                    dt = dt.replace(tzinfo=timezone.utc)
+                flattened['timestamp'] = dt
             except (ValueError, AttributeError):
                 flattened['timestamp'] = None
         else:
@@ -131,7 +136,12 @@ class PreprocessingResultsUploader:
         ssl_expires_str = ssl_info.get('expires_date')
         if ssl_expires_str:
             try:
-                flattened['ssl_expires_date'] = datetime.fromisoformat(ssl_expires_str.replace('Z', '+00:00'))
+                dt = datetime.fromisoformat(ssl_expires_str.replace('Z', '+00:00'))
+                # Ensure timezone-aware (convert to UTC if naive)
+                if dt.tzinfo is None:
+                    from datetime import timezone
+                    dt = dt.replace(tzinfo=timezone.utc)
+                flattened['ssl_expires_date'] = dt
             except (ValueError, AttributeError):
                 flattened['ssl_expires_date'] = None
         else:
