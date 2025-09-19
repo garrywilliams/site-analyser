@@ -88,12 +88,22 @@ class SSLChecker:
             
             if expires_str:
                 try:
-                    # Parse certificate date format: 'Jan  1 00:00:00 2025 GMT'
-                    expires_dt = datetime.strptime(expires_str, '%b %d %H:%M:%S %Y %Z')
-                    expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+                    # Parse certificate date format: 'Jan  1 00:00:00 2025 GMT'  
+                    # strptime with %Z often creates naive datetimes, so parse without %Z first
+                    if expires_str.endswith(' GMT'):
+                        # Remove GMT suffix and parse as naive, then add UTC timezone
+                        date_part = expires_str[:-4]  # Remove ' GMT'
+                        expires_dt = datetime.strptime(date_part, '%b %d %H:%M:%S %Y')
+                        expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+                    else:
+                        # Fallback to original parsing
+                        expires_dt = datetime.strptime(expires_str, '%b %d %H:%M:%S %Y %Z')
+                        if expires_dt.tzinfo is None:
+                            expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+                    
                     expires_date = expires_dt.isoformat()
                     
-                    # Calculate days until expiry
+                    # Calculate days until expiry - ensure both datetimes are timezone-aware
                     now = datetime.now(timezone.utc)
                     days_until_expiry = (expires_dt - now).days
                     
